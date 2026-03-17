@@ -31,6 +31,56 @@ Access the admin panel at http://127.0.0.1:8000/admin/
 - **Auto-Reply**: Configurable routing rules and response logic
 - **Rate Limiting**: Built-in rate limiting to avoid API throttling
 - **Django Admin**: Full management interface
+- **Rich Tool Library**: File I/O, shell execution, web access, image analysis, browser automation, and sub-agent sessions
+
+## Available Tools
+
+All tools inherit from `BaseTool` (`mrvn/agents/tools/base.py`) and are registered via `register_builtin_tools()`.
+
+### Core Tools (`mrvn/agents/tools/builtin.py`)
+
+| Tool | Name | Description |
+|------|------|-------------|
+| `DateTimeTool` | `get_datetime` | Current date/time in any timezone |
+| `CalculatorTool` | `calculator` | Safe arithmetic expression evaluator |
+| `MemoryStoreTool` | `memory_store` | Store key-value pairs in session memory |
+| `MemoryRetrieveTool` | `memory_retrieve` | Retrieve stored values by key |
+| `MemorySearchTool` | `memory_search` | Hybrid vector+text search over conversation history |
+
+### Coding Tools (`mrvn/agents/tools/coding.py`)
+
+| Tool | Name | `require_approval` | Description |
+|------|------|-------------------|-------------|
+| `ReadTool` | `read` | No | Read file contents with optional line range |
+| `WriteTool` | `write` | Yes | Write/overwrite a file |
+| `EditTool` | `edit` | Yes | Targeted unique-string replacement in a file |
+| `ApplyPatchTool` | `apply_patch` | Yes | Apply a unified diff patch via the `patch` CLI |
+| `ExecTool` | `exec` | Yes | Run shell commands (includes `gh` CLI for GitHub) |
+| `ProcessTool` | `process` | Yes | Manage long-running background shell sessions |
+| `WebFetchTool` | `web_fetch` | No | Fetch URL content as plain text |
+| `RealWebSearchTool` | `web_search` | No | Search via Brave Search API |
+| `SessionsSpawnTool` | `sessions_spawn` | Yes | Spawn a Claude CLI sub-agent session |
+| `SessionsSendTool` | `sessions_send` | Yes | Send a prompt to a Claude CLI sub-agent |
+| `ImageTool` | `image` | No | Analyze images via Claude vision |
+| `BrowserTool` | `browser` | Yes | Browser automation via Playwright |
+
+### Tool Profiles
+
+Agents are assigned a `ToolProfile` controlling which tools they can access:
+
+| Profile | Tools |
+|---------|-------|
+| `minimal` | None |
+| `coding` | `read`, `write`, `edit`, `apply_patch`, `exec`, `process`, `web_fetch`, `web_search`, `sessions_spawn`, `sessions_send`, `image`, `memory_store`, `memory_retrieve`, `memory_search` |
+| `messaging` | Tools with messaging prefixes |
+| `full` | All tools |
+
+### Required Environment Variables for Coding Tools
+
+| Variable | Required By | Description |
+|----------|-------------|-------------|
+| `BRAVE_SEARCH_API_KEY` | `web_search` | Brave Search API key (https://api.search.brave.com/) |
+| `ANTHROPIC_API_KEY` | `image` | Anthropic API key for vision analysis |
 
 ## Requirements
 
