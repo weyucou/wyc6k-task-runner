@@ -36,6 +36,15 @@ class Agent(TimestampedModel):
         related_name="agents",
     )
 
+    customer = models.ForeignKey(
+        "accounts.Customer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="agents",
+        db_index=True,
+    )
+
     # LLM Configuration
     provider = models.CharField(
         max_length=20,

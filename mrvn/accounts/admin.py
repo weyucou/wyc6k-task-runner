@@ -8,7 +8,14 @@ from django.utils.html import escape
 from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
 
-from .models import CustomUser
+from .models import Customer, CustomUser
+
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = ["name", "github_org", "is_active", "created_datetime"]
+    list_filter = ["is_active"]
+    search_fields = ["name", "github_org"]
 
 
 @admin.register(CustomUser)

@@ -1,8 +1,22 @@
 import logging
 
+from commons.models import TimestampedModel
 from django.contrib.auth.models import AbstractUser
+from django.db import models
 
 logger = logging.getLogger(__name__)
+
+
+class Customer(TimestampedModel):
+    """Top-level tenant for per-customer memory isolation."""
+
+    name = models.CharField(max_length=255)
+    github_org = models.CharField(max_length=255, unique=True)
+    s3_context_prefix = models.CharField(max_length=512)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class CustomUser(AbstractUser):
