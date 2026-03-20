@@ -1,4 +1,4 @@
-import commons.functions
+import commons.models
 from django.db import migrations, models
 
 
@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name='Customer',
             fields=[
-                ('id', models.UUIDField(default=commons.functions.uuidv7, editable=False, primary_key=True, serialize=False)),
+                ('id', commons.models.UUID7Field(primary_key=True, serialize=False)),
                 ('created_datetime', models.DateTimeField(auto_now_add=True)),
                 ('updated_datetime', models.DateTimeField(auto_now=True)),
                 ('name', models.CharField(max_length=255)),

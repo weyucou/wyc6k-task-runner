@@ -2,7 +2,6 @@ import logging
 from enum import StrEnum
 
 from commons.models import TimestampedModel
-from django.conf import settings
 from django.db import models
 
 logger = logging.getLogger(__name__)
@@ -29,19 +28,6 @@ class Agent(TimestampedModel):
 
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
-
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-    )
-
-    customer = models.ForeignKey(
-        "accounts.Customer",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        db_index=True,
-    )
 
     # LLM Configuration
     provider = models.CharField(
@@ -106,7 +92,6 @@ class Agent(TimestampedModel):
     config = models.JSONField(default=dict, blank=True)
 
     class Meta:
-        unique_together = [("owner", "name")]
         ordering = ["-created_datetime"]
 
     def __str__(self) -> str:

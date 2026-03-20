@@ -34,10 +34,8 @@ class AgentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        """Return agents owned by the current user."""
-        return (
-            Agent.objects.filter(owner=self.request.user).select_related("owner").prefetch_related("agent_tools__tool")
-        )
+        """Return all active agents."""
+        return Agent.objects.prefetch_related("agent_tools__tool")
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -52,7 +50,7 @@ class AgentViewSet(viewsets.ModelViewSet):
         api_key = serializer.validated_data.pop("api_key", None)
 
         with transaction.atomic():
-            agent = serializer.save(owner=self.request.user)
+            agent = serializer.save()
 
             if api_key:
                 # TODO: Implement proper encryption

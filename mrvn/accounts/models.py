@@ -1,7 +1,6 @@
 import logging
 
-from commons.functions import uuidv7
-from commons.models import TimestampedModel
+from commons.models import TimestampedModel, UUID7Field
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -11,7 +10,7 @@ logger = logging.getLogger(__name__)
 class Customer(TimestampedModel):
     """Top-level tenant for per-customer memory isolation."""
 
-    id = models.UUIDField(primary_key=True, default=uuidv7, editable=False)
+    id = UUID7Field(primary_key=True)
     name = models.CharField(max_length=255)
     github_org = models.CharField(max_length=255, unique=True, blank=True, null=True)
     # Auto-calculated on save: customers/{id}/
