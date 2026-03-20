@@ -82,6 +82,13 @@ Agents are assigned a `ToolProfile` controlling which tools they can access:
 | `BRAVE_SEARCH_API_KEY` | `web_search` | Brave Search API key (https://api.search.brave.com/) |
 | `ANTHROPIC_API_KEY` | `image` | Anthropic API key for vision analysis |
 
+### Optional Runtime Dependencies for Coding Tools
+
+| Dependency | Required By | Install |
+|------------|-------------|---------|
+| `playwright` + Chromium | `browser` | `pip install playwright && playwright install chromium` |
+| `claude` CLI | `sessions_spawn`, `sessions_send` | Install from [Claude Code](https://claude.ai/code) |
+
 ## Requirements
 
 - Python 3.14
