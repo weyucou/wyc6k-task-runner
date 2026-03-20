@@ -114,15 +114,6 @@ class ChatRoom(TimestampedModel):
         related_name="chat_rooms",
     )
 
-    customer = models.ForeignKey(
-        "accounts.Customer",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="chat_rooms",
-        db_index=True,
-    )
-
     metadata = models.JSONField(default=dict, blank=True)
 
     class Meta:

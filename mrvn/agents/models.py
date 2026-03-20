@@ -33,7 +33,6 @@ class Agent(TimestampedModel):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="agents",
     )
 
     customer = models.ForeignKey(
@@ -41,7 +40,6 @@ class Agent(TimestampedModel):
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name="agents",
         db_index=True,
     )
 

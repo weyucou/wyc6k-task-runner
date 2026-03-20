@@ -1,5 +1,6 @@
 import logging
 
+from commons.functions import uuidv7
 from commons.models import TimestampedModel
 from django.contrib.auth.models import AbstractUser
 from django.db import models
@@ -10,14 +11,19 @@ logger = logging.getLogger(__name__)
 class Customer(TimestampedModel):
     """Top-level tenant for per-customer memory isolation."""
 
+    id = models.UUIDField(primary_key=True, default=uuidv7, editable=False)
     name = models.CharField(max_length=255)
-    github_org = models.CharField(max_length=255, unique=True)
-    # Key prefix in S3, e.g. cust_abc/ (bucket configured separately)
-    s3_context_prefix = models.CharField(max_length=512)
+    github_org = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    # Auto-calculated on save: customers/{id}/
+    s3_context_prefix = models.CharField(max_length=512, editable=False, blank=True)
     is_active = models.BooleanField(default=True)
 
+    def save(self, *args, **kwargs):
+        self.s3_context_prefix = f"customers/{self.id}/"
+        super().save(*args, **kwargs)
+
     def __str__(self) -> str:
-        return self.name
+        return f"{self.name}({self.id})"
 
 
 class CustomUser(AbstractUser):

@@ -49,15 +49,6 @@ class Session(TimestampedModel):
         related_name="sessions",
     )
 
-    customer = models.ForeignKey(
-        "accounts.Customer",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="sessions",
-        db_index=True,
-    )
-
     is_active = models.BooleanField(default=True)
 
     # Session metadata (context window info, token counts, etc.)
