@@ -10,9 +10,15 @@ import threading
 from typing import Any
 from urllib.request import Request, urlopen
 
-from agents.tools.base import BaseTool, ToolParameter, ToolResult
+from agents.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
+
+try:
+    from playwright.async_api import async_playwright  # noqa: PLC0415
+except ImportError:
+    async_playwright = None  # type: ignore[assignment]
+
 
 
 class ReadTool(BaseTool):
@@ -265,9 +271,11 @@ class ExecTool(BaseTool):
                     output=output,
                     data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
                 )
-            return ToolResult.from_error(
-                f"Command exited with code {proc.returncode}.",
+            return ToolResult(
+                status=ToolStatus.ERROR,
                 output=output,
+                error=f"Command exited with code {proc.returncode}.",
+                data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
             )
         except asyncio.TimeoutError:
             return ToolResult.from_error(f"Command timed out after {timeout}s.")
@@ -669,15 +677,11 @@ class ImageTool(BaseTool):
 
     async def execute(self, source: str, prompt: str = "Describe this image.") -> ToolResult:
         """Analyze an image."""
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            return ToolResult.from_error("ANTHROPIC_API_KEY environment variable is not set.")
         try:
-            import anthropic  # noqa: PLC0415
-
-            api_key = os.getenv("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                return ToolResult.from_error("ANTHROPIC_API_KEY environment variable is not set.")
-
             image_data, media_type = await self._load_image(source)
-
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
@@ -815,9 +819,7 @@ class BrowserTool(BaseTool):
         output_path: str = "/tmp/screenshot.png",
     ) -> ToolResult:
         """Perform browser action."""
-        try:
-            from playwright.async_api import async_playwright  # noqa: PLC0415
-        except ImportError:
+        if async_playwright is None:
             return ToolResult.from_error(
                 "playwright package is required. Install it with: pip install playwright && playwright install chromium"
             )
