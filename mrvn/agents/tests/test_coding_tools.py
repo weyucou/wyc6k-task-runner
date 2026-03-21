@@ -20,6 +20,7 @@ from agents.tools.coding import (
     SessionsSpawnTool,
     WebFetchTool,
     WriteTool,
+    _SESSION_MANAGER,
 )
 
 
@@ -357,10 +358,7 @@ class SessionsSpawnToolTests(IsolatedAsyncioTestCase):
         self.assertIn("claude", result.error.lower())
 
     async def test_success_spawns_session(self) -> None:
-        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
-
-        with _AGENT_SESSIONS_LOCK:
-            _AGENT_SESSIONS.clear()
+        _SESSION_MANAGER.clear()
 
         mock_proc = MagicMock()
         mock_proc.communicate.return_value = ("agent response", "")
@@ -380,16 +378,10 @@ class SessionsSpawnToolTests(IsolatedAsyncioTestCase):
 class SessionsSendToolTests(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tool = SessionsSendTool()
-        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
-
-        with _AGENT_SESSIONS_LOCK:
-            _AGENT_SESSIONS.clear()
+        _SESSION_MANAGER.clear()
 
     def tearDown(self) -> None:
-        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
-
-        with _AGENT_SESSIONS_LOCK:
-            _AGENT_SESSIONS.clear()
+        _SESSION_MANAGER.clear()
 
     async def test_session_not_found_returns_error(self) -> None:
         result = await self.tool.execute(session_id="nonexistent", prompt="hello")
@@ -397,14 +389,11 @@ class SessionsSendToolTests(IsolatedAsyncioTestCase):
         self.assertIn("not found", result.error.lower())
 
     async def test_success_sends_message(self) -> None:
-        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
-
         mock_proc = MagicMock()
         mock_proc.communicate.return_value = ("response text", "")
         mock_proc.returncode = 0
 
-        with _AGENT_SESSIONS_LOCK:
-            _AGENT_SESSIONS["s1"] = mock_proc
+        _SESSION_MANAGER.add("s1", mock_proc)
 
         result = await self.tool.execute(session_id="s1", prompt="hello")
         self.assertEqual(result.status, ToolStatus.SUCCESS)
@@ -412,8 +401,6 @@ class SessionsSendToolTests(IsolatedAsyncioTestCase):
 
     async def test_spawn_then_send_uses_same_process(self) -> None:
         """Send must reuse the process stored by spawn, not spawn a fresh subprocess."""
-        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
-
         spawn_tool = SessionsSpawnTool()
 
         mock_proc = MagicMock()
@@ -423,8 +410,7 @@ class SessionsSendToolTests(IsolatedAsyncioTestCase):
         with patch("subprocess.Popen", return_value=mock_proc):
             await spawn_tool.execute(session_id="test_session", prompt="initial prompt")
 
-        with _AGENT_SESSIONS_LOCK:
-            stored_proc = _AGENT_SESSIONS.get("test_session")
+        stored_proc = _SESSION_MANAGER.get("test_session")
         self.assertIs(stored_proc, mock_proc)
 
         with patch("subprocess.Popen") as mock_popen_send:
