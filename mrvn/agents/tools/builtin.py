@@ -154,7 +154,7 @@ class BrowserTool(BaseTool):
             with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
                 content = response.read().decode("utf-8", errors="replace")
             return ToolResult.success(
-                output=content[:4000],
+                output=content,
                 data={"url": url, "length": len(content)},
             )
         except Exception as exc:

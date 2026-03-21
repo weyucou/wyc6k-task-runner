@@ -224,11 +224,11 @@ class BrowserToolTests(IsolatedAsyncioTestCase):
         self.assertEqual(result.status, ToolStatus.ERROR)
         self.assertIn("Failed to fetch URL", result.error)
 
-    async def test_output_truncated_to_4000_chars(self) -> None:
-        """Test that output is truncated to 4000 characters for large pages."""
+    async def test_full_content_returned_for_large_pages(self) -> None:
+        """Test that full content is returned without truncation."""
         long_content = "x" * 5000
         with patch("urllib.request.urlopen", return_value=self._make_mock_response(long_content)):
             result = await self.tool.execute(url="http://example.com")
         self.assertEqual(result.status, ToolStatus.SUCCESS)
-        self.assertEqual(len(result.output), 4000)
+        self.assertEqual(len(result.output), 5000)
         self.assertEqual(result.data["length"], 5000)
