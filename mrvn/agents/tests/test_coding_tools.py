@@ -183,15 +183,7 @@ class ApplyPatchToolTests(IsolatedAsyncioTestCase):
             with open(target, "w") as f:
                 f.write("line1\nline2\nline3\n")
 
-            patch_text = (
-                "--- a/file.txt\n"
-                "+++ b/file.txt\n"
-                "@@ -1,3 +1,3 @@\n"
-                " line1\n"
-                "-line2\n"
-                "+changed\n"
-                " line3\n"
-            )
+            patch_text = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line1\n-line2\n+changed\n line3\n"
             old_cwd = os.getcwd()
             os.chdir(tmpdir)
             try:
@@ -335,11 +327,7 @@ class RealWebSearchToolTests(IsolatedAsyncioTestCase):
     @patch("agents.tools.coding.RealWebSearchTool._search")
     async def test_success_with_api_key(self, mock_search: MagicMock) -> None:
         mock_search.return_value = {
-            "web": {
-                "results": [
-                    {"title": "Result 1", "url": "http://example.com", "description": "Desc"}
-                ]
-            }
+            "web": {"results": [{"title": "Result 1", "url": "http://example.com", "description": "Desc"}]}
         }
         with patch.dict(os.environ, {"BRAVE_SEARCH_API_KEY": "fake_key"}):
             result = await self.tool.execute(query="python testing")
@@ -392,22 +380,59 @@ class SessionsSpawnToolTests(IsolatedAsyncioTestCase):
 class SessionsSendToolTests(IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tool = SessionsSendTool()
+        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
 
-    async def test_claude_not_found_returns_error(self) -> None:
-        with patch("subprocess.Popen", side_effect=FileNotFoundError("claude not found")):
-            result = await self.tool.execute(session_id="s1", prompt="hello")
+        with _AGENT_SESSIONS_LOCK:
+            _AGENT_SESSIONS.clear()
+
+    def tearDown(self) -> None:
+        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
+
+        with _AGENT_SESSIONS_LOCK:
+            _AGENT_SESSIONS.clear()
+
+    async def test_session_not_found_returns_error(self) -> None:
+        result = await self.tool.execute(session_id="nonexistent", prompt="hello")
         self.assertEqual(result.status, ToolStatus.ERROR)
-        self.assertIn("claude", result.error.lower())
+        self.assertIn("not found", result.error.lower())
 
     async def test_success_sends_message(self) -> None:
+        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
+
         mock_proc = MagicMock()
         mock_proc.communicate.return_value = ("response text", "")
         mock_proc.returncode = 0
 
-        with patch("subprocess.Popen", return_value=mock_proc):
-            result = await self.tool.execute(session_id="s1", prompt="hello")
+        with _AGENT_SESSIONS_LOCK:
+            _AGENT_SESSIONS["s1"] = mock_proc
+
+        result = await self.tool.execute(session_id="s1", prompt="hello")
         self.assertEqual(result.status, ToolStatus.SUCCESS)
         self.assertIn("response text", result.output)
+
+    async def test_spawn_then_send_uses_same_process(self) -> None:
+        """Send must reuse the process stored by spawn, not spawn a fresh subprocess."""
+        from agents.tools.coding import _AGENT_SESSIONS, _AGENT_SESSIONS_LOCK
+
+        spawn_tool = SessionsSpawnTool()
+
+        mock_proc = MagicMock()
+        mock_proc.communicate.return_value = ("initial response", "")
+        mock_proc.returncode = 0
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            await spawn_tool.execute(session_id="test_session", prompt="initial prompt")
+
+        with _AGENT_SESSIONS_LOCK:
+            stored_proc = _AGENT_SESSIONS.get("test_session")
+        self.assertIs(stored_proc, mock_proc)
+
+        with patch("subprocess.Popen") as mock_popen_send:
+            result = await self.tool.execute(session_id="test_session", prompt="follow-up")
+
+        mock_popen_send.assert_not_called()
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        self.assertEqual(mock_proc.communicate.call_count, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +458,7 @@ class ImageToolTests(IsolatedAsyncioTestCase):
 
     @patch("agents.tools.coding.ImageTool._call_vision")
     @patch("agents.tools.coding.ImageTool._load_image")
-    async def test_success_returns_description(
-        self, mock_load: MagicMock, mock_vision: MagicMock
-    ) -> None:
+    async def test_success_returns_description(self, mock_load: MagicMock, mock_vision: MagicMock) -> None:
         mock_load.return_value = ("base64data", "image/png")
         mock_vision.return_value = "A beautiful sunset."
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake"}):

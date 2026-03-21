@@ -20,7 +20,6 @@ except ImportError:
     async_playwright = None  # type: ignore[assignment]
 
 
-
 class ReadTool(BaseTool):
     """Read the contents of a file."""
 
@@ -116,8 +115,7 @@ class EditTool(BaseTool):
 
     name = "edit"
     description = (
-        "Replace an exact string in a file with new text. "
-        "The old_string must appear exactly once in the file."
+        "Replace an exact string in a file with new text. The old_string must appear exactly once in the file."
     )
     require_approval = True
     parameters = [
@@ -463,10 +461,7 @@ class RealWebSearchTool(BaseTool):
     """Search the web using Brave Search API."""
 
     name = "web_search"
-    description = (
-        "Search the web using Brave Search API. "
-        "Set BRAVE_SEARCH_API_KEY environment variable to enable."
-    )
+    description = "Search the web using Brave Search API. Set BRAVE_SEARCH_API_KEY environment variable to enable."
     parameters = [
         ToolParameter(
             name="query",
@@ -625,14 +620,11 @@ class SessionsSendTool(BaseTool):
 
     async def execute(self, session_id: str, prompt: str, model: str = "claude-sonnet-4-6") -> ToolResult:
         """Send a message to a sub-agent via Claude CLI."""
+        with _AGENT_SESSIONS_LOCK:
+            proc = _AGENT_SESSIONS.get(session_id)
+        if proc is None:
+            return ToolResult.from_error(f"Session '{session_id}' not found. Use sessions_spawn first.")
         try:
-            proc = subprocess.Popen(  # noqa: S603
-                ["claude", "--model", model, "--print"],  # noqa: S607
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
             stdout, stderr = proc.communicate(input=prompt, timeout=120)
             if proc.returncode != 0:
                 return ToolResult.from_error(
@@ -643,8 +635,6 @@ class SessionsSendTool(BaseTool):
                 output=stdout,
                 data={"session_id": session_id},
             )
-        except FileNotFoundError:
-            return ToolResult.from_error("'claude' CLI not found.")
         except subprocess.TimeoutExpired:
             return ToolResult.from_error("Sub-agent timed out.")
         except OSError as exc:
