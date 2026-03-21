@@ -307,20 +307,28 @@ def register_builtin_tools(
 ) -> None:
     """Register all built-in tools with the given registry.
 
+    Registers core tools plus all coding tools (file I/O, shell execution,
+    web access, image analysis, browser automation, and sub-agent sessions).
+
     Args:
         registry: The ToolRegistry instance.
         agent_id: Optional agent ID for memory search context.
         session_id: Optional session ID for memory search context.
     """
-    tools = [
+    from agents.tools.coding import register_coding_tools  # noqa: PLC0415
+
+    core_tools = [
         DateTimeTool(),
         CalculatorTool(),
-        WebSearchTool(),
+        MemoryStoreTool(),
+        MemoryRetrieveTool(),
         MemorySearchTool(agent_id=agent_id, session_id=session_id),
     ]
 
-    for tool in tools:
+    for tool in core_tools:
         try:
             registry.register(tool)
         except ValueError:
             logger.debug("Tool %s already registered", tool.name)
+
+    register_coding_tools(registry)
