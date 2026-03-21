@@ -132,6 +132,35 @@ class WebSearchTool(BaseTool):
         )
 
 
+class BrowserTool(BaseTool):
+    """Tool for fetching web page content."""
+
+    name = "browser_fetch"
+    description = "Fetch the content of a web page by URL."
+    parameters = [
+        ToolParameter(
+            name="url",
+            type="string",
+            description="The URL of the web page to fetch.",
+            required=True,
+        ),
+    ]
+
+    async def execute(self, url: str) -> ToolResult:
+        """Fetch content from a URL."""
+        import urllib.request  # noqa: PLC0415
+
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+                content = response.read().decode("utf-8", errors="replace")
+            return ToolResult.success(
+                output=content[:4000],
+                data={"url": url, "length": len(content)},
+            )
+        except Exception as exc:
+            return ToolResult.from_error(f"Failed to fetch URL: {exc}")
+
+
 class MemoryStoreTool(BaseTool):
     """Tool for storing information in the conversation memory."""
 
@@ -316,6 +345,7 @@ def register_builtin_tools(
         DateTimeTool(),
         CalculatorTool(),
         WebSearchTool(),
+        BrowserTool(),
         MemorySearchTool(agent_id=agent_id, session_id=session_id),
     ]
 

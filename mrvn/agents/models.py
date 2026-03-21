@@ -146,7 +146,7 @@ class Agent(TimestampedModel):
             return []
         if self.tool_profile == ToolProfile.CODING.value:
             # Return coding-related tools
-            coding_prefixes = ("read", "write", "edit", "exec", "file", "code")
+            coding_prefixes = ("read", "write", "edit", "exec", "file", "code", "browser")
             return [t for t in available_tools if any(t.startswith(p) for p in coding_prefixes)]
         if self.tool_profile == ToolProfile.MESSAGING.value:
             # Return messaging-related tools
