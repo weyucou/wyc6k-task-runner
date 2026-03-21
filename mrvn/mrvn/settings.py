@@ -266,6 +266,9 @@ LOGGING = {
 }
 
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+
+# GitHub API token for reading READMEs (optional — unauthenticated calls are rate-limited)
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 AWS_DEFAULT_REGION = AWS_REGION
 
 # CSRF Settings
