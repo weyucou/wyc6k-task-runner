@@ -34,7 +34,7 @@ class AgentViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        """Return all active agents."""
+        """Return all agents."""
         return Agent.objects.prefetch_related("agent_tools__tool")
 
     def get_serializer_class(self):
