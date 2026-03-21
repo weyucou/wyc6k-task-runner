@@ -147,6 +147,7 @@ class Agent(TimestampedModel):
                 "process",
                 "web_fetch",
                 "web_search",
+                "browser_fetch",
                 "sessions_spawn",
                 "sessions_send",
                 "image",
