@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from agents.tools.builtin import CalculatorTool, DateTimeTool, WebSearchTool
+from agents.tools.builtin import BrowserTool, CalculatorTool, DateTimeTool, WebSearchTool
 
 
 class CalculatorToolValidationTests(TestCase):
@@ -155,6 +155,32 @@ class WebSearchToolValidationTests(TestCase):
         is_valid, error = self.tool.validate_params({"query": 123})
         self.assertFalse(is_valid)
         self.assertIn("string", error.lower())
+
+
+class BrowserToolValidationTests(TestCase):
+    """Tests for BrowserTool parameter validation."""
+
+    def setUp(self) -> None:
+        """Set up browser tool."""
+        self.tool = BrowserTool()
+
+    def test_missing_required_url(self) -> None:
+        """Test that missing url parameter is rejected."""
+        is_valid, error = self.tool.validate_params({})
+        self.assertFalse(is_valid)
+        self.assertIn("url", error)
+
+    def test_wrong_type_for_url(self) -> None:
+        """Test that wrong type for url is rejected."""
+        is_valid, error = self.tool.validate_params({"url": 123})
+        self.assertFalse(is_valid)
+        self.assertIn("string", error.lower())
+
+    def test_valid_url_parameter(self) -> None:
+        """Test that valid url string is accepted."""
+        is_valid, error = self.tool.validate_params({"url": "http://example.com"})
+        self.assertTrue(is_valid)
+        self.assertIsNone(error)
 
 
 class ToolSchemaGenerationTests(TestCase):

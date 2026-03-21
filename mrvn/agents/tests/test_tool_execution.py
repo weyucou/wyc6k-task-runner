@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from unittest import IsolatedAsyncioTestCase
+from unittest.mock import MagicMock, patch
 
 from agents.tools.base import ToolStatus
-from agents.tools.builtin import CalculatorTool, DateTimeTool
+from agents.tools.builtin import BrowserTool, CalculatorTool, DateTimeTool
 
 
 class CalculatorToolTests(IsolatedAsyncioTestCase):
@@ -189,3 +190,45 @@ class DateTimeToolTests(IsolatedAsyncioTestCase):
         self.assertEqual(result.status, ToolStatus.SUCCESS)
         current_year = datetime.now().year
         self.assertEqual(result.data["year"], current_year)
+
+
+class BrowserToolTests(IsolatedAsyncioTestCase):
+    """Tests for BrowserTool execution."""
+
+    def setUp(self) -> None:
+        """Set up browser tool."""
+        self.tool = BrowserTool()
+
+    def _make_mock_response(self, content: str) -> MagicMock:
+        """Build a context-manager mock for urlopen."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = content.encode("utf-8")
+        mock_response.__enter__ = lambda s: mock_response
+        mock_response.__exit__ = MagicMock(return_value=False)
+        return mock_response
+
+    async def test_successful_fetch(self) -> None:
+        """Test successful URL fetch returns page content."""
+        html = "<html><body>Hello</body></html>"
+        with patch("urllib.request.urlopen", return_value=self._make_mock_response(html)):
+            result = await self.tool.execute(url="http://example.com")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        self.assertEqual(result.output, html)
+        self.assertEqual(result.data["url"], "http://example.com")
+        self.assertEqual(result.data["length"], len(html))
+
+    async def test_fetch_error_returns_error_result(self) -> None:
+        """Test that a network error returns an ERROR result."""
+        with patch("urllib.request.urlopen", side_effect=Exception("Connection refused")):
+            result = await self.tool.execute(url="http://bad-url.example")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("Failed to fetch URL", result.error)
+
+    async def test_output_truncated_to_4000_chars(self) -> None:
+        """Test that output is truncated to 4000 characters for large pages."""
+        long_content = "x" * 5000
+        with patch("urllib.request.urlopen", return_value=self._make_mock_response(long_content)):
+            result = await self.tool.execute(url="http://example.com")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        self.assertEqual(len(result.output), 4000)
+        self.assertEqual(result.data["length"], 5000)
