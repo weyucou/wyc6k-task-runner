@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock
 
 from agents.models import Agent
-from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
@@ -13,8 +12,6 @@ from memory.partitioning import (
     PostgresListPartition,
     get_partitioning_manager,
 )
-
-User = get_user_model()
 
 
 class PostgresListPartitionTests(TestCase):
@@ -68,24 +65,14 @@ class PostgresListPartitionTests(TestCase):
 class AgentListPartitioningStrategyTests(TransactionTestCase):
     """Tests for AgentListPartitioningStrategy."""
 
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="testuser",
-            email="test@example.com",
-            password="testpass123",  # noqa: S106
-        )
-
     def test_to_create_yields_partitions_for_agents(self):
         """Test that to_create() yields partition for each agent."""
         agent1 = Agent.objects.create(
             name="Agent 1",
-            owner=self.user,
             model_name="test-model",
         )
         agent2 = Agent.objects.create(
             name="Agent 2",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -118,7 +105,6 @@ class AgentListPartitioningStrategyTests(TransactionTestCase):
         """Test that to_delete() is empty (no auto-deletion)."""
         Agent.objects.create(
             name="Agent",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -146,14 +132,6 @@ class GetPartitioningManagerTests(TestCase):
 
 class PartitionIntegrationTests(TransactionTestCase):
     """Integration tests for partition creation/deletion."""
-
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="integrationuser",
-            email="integration@example.com",
-            password="testpass123",  # noqa: S106
-        )
 
     def _partition_exists(self, partition_name: str) -> bool:
         """Check if a partition exists in the database."""
@@ -192,7 +170,6 @@ class PartitionIntegrationTests(TransactionTestCase):
 
         agent = Agent.objects.create(
             name="Partition Test Agent",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -222,7 +199,6 @@ class PartitionIntegrationTests(TransactionTestCase):
 
         agent = Agent.objects.create(
             name="Delete Partition Test",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -267,7 +243,6 @@ class PartitionIntegrationTests(TransactionTestCase):
 
         agent = Agent.objects.create(
             name="Data Routing Test",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -302,7 +277,6 @@ class PartitionIntegrationTests(TransactionTestCase):
         """Test that data routes to default partition when no agent partition exists."""
         agent = Agent.objects.create(
             name="Default Partition Test",
-            owner=self.user,
             model_name="test-model",
         )
 
@@ -325,19 +299,11 @@ class PartitionIntegrationTests(TransactionTestCase):
 class PartitioningManagerPlanTests(TransactionTestCase):
     """Tests for partitioning manager plan generation."""
 
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="planuser",
-            email="plan@example.com",
-            password="testpass123",  # noqa: S106
-        )
-
     def test_manager_plan_includes_new_agents(self):
         """Test that partitioning manager plan includes partitions for new agents."""
         # Create some agents
-        agent1 = Agent.objects.create(name="Plan Agent 1", owner=self.user, model_name="test")
-        agent2 = Agent.objects.create(name="Plan Agent 2", owner=self.user, model_name="test")
+        agent1 = Agent.objects.create(name="Plan Agent 1", model_name="test")
+        agent2 = Agent.objects.create(name="Plan Agent 2", model_name="test")
 
         manager = get_partitioning_manager()
         plan = manager.plan()
@@ -350,7 +316,7 @@ class PartitioningManagerPlanTests(TransactionTestCase):
 
     def test_manager_plan_no_deletions(self):
         """Test that partitioning manager plan has no deletions (by design)."""
-        Agent.objects.create(name="No Delete Agent", owner=self.user, model_name="test")
+        Agent.objects.create(name="No Delete Agent", model_name="test")
 
         manager = get_partitioning_manager()
         plan = manager.plan()

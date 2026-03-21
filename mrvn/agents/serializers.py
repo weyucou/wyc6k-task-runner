@@ -48,8 +48,6 @@ class AgentToolSerializer(serializers.ModelSerializer):
 class AgentListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for agent listing."""
 
-    owner_username = serializers.CharField(source="owner.username", read_only=True)
-
     class Meta:
         model = Agent
         fields = [
@@ -59,17 +57,15 @@ class AgentListSerializer(serializers.ModelSerializer):
             "provider",
             "model_name",
             "is_active",
-            "owner_username",
             "created_datetime",
             "updated_datetime",
         ]
-        read_only_fields = ["id", "owner_username", "created_datetime", "updated_datetime"]
+        read_only_fields = ["id", "created_datetime", "updated_datetime"]
 
 
 class AgentDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer for agent with full configuration."""
 
-    owner_username = serializers.CharField(source="owner.username", read_only=True)
     agent_tools = AgentToolSerializer(many=True, read_only=True)
     provider_choices = serializers.SerializerMethodField()
 
@@ -79,8 +75,6 @@ class AgentDetailSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "description",
-            "owner",
-            "owner_username",
             "provider",
             "provider_choices",
             "model_name",
@@ -103,8 +97,6 @@ class AgentDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
-            "owner",
-            "owner_username",
             "provider_choices",
             "agent_tools",
             "created_datetime",
