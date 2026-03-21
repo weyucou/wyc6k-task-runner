@@ -20,7 +20,6 @@ except ImportError:
     async_playwright = None  # type: ignore[assignment]
 
 
-
 class ReadTool(BaseTool):
     """Read the contents of a file."""
 
@@ -116,8 +115,7 @@ class EditTool(BaseTool):
 
     name = "edit"
     description = (
-        "Replace an exact string in a file with new text. "
-        "The old_string must appear exactly once in the file."
+        "Replace an exact string in a file with new text. The old_string must appear exactly once in the file."
     )
     require_approval = True
     parameters = [
@@ -463,10 +461,7 @@ class RealWebSearchTool(BaseTool):
     """Search the web using Brave Search API."""
 
     name = "web_search"
-    description = (
-        "Search the web using Brave Search API. "
-        "Set BRAVE_SEARCH_API_KEY environment variable to enable."
-    )
+    description = "Search the web using Brave Search API. Set BRAVE_SEARCH_API_KEY environment variable to enable."
     parameters = [
         ToolParameter(
             name="query",
@@ -526,9 +521,31 @@ class RealWebSearchTool(BaseTool):
             return json.loads(resp.read())
 
 
-# Sub-agent session registry: session_id -> subprocess.Popen
-_AGENT_SESSIONS: dict[str, subprocess.Popen] = {}
-_AGENT_SESSIONS_LOCK = threading.Lock()
+class AgentSessionManager:
+    """Thread-safe registry of spawned sub-agent sessions."""
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, subprocess.Popen] = {}
+        self._lock = threading.Lock()
+
+    def __contains__(self, session_id: str) -> bool:
+        with self._lock:
+            return session_id in self._sessions
+
+    def get(self, session_id: str) -> subprocess.Popen | None:
+        with self._lock:
+            return self._sessions.get(session_id)
+
+    def add(self, session_id: str, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._sessions[session_id] = proc
+
+    def clear(self) -> None:
+        with self._lock:
+            self._sessions.clear()
+
+
+_SESSION_MANAGER = AgentSessionManager()
 
 
 class SessionsSpawnTool(BaseTool):
@@ -564,9 +581,8 @@ class SessionsSpawnTool(BaseTool):
 
     async def execute(self, session_id: str, prompt: str, model: str = "claude-sonnet-4-6") -> ToolResult:
         """Spawn a Claude CLI sub-agent."""
-        with _AGENT_SESSIONS_LOCK:
-            if session_id in _AGENT_SESSIONS:
-                return ToolResult.from_error(f"Session '{session_id}' already exists.")
+        if session_id in _SESSION_MANAGER:
+            return ToolResult.from_error(f"Session '{session_id}' already exists.")
         try:
             proc = subprocess.Popen(  # noqa: S603
                 ["claude", "--model", model, "--print"],  # noqa: S607
@@ -581,8 +597,7 @@ class SessionsSpawnTool(BaseTool):
                     f"Sub-agent failed (code {proc.returncode}): {stderr}",
                     output=stdout,
                 )
-            with _AGENT_SESSIONS_LOCK:
-                _AGENT_SESSIONS[session_id] = proc
+            _SESSION_MANAGER.add(session_id, proc)
             return ToolResult.success(
                 output=stdout,
                 data={"session_id": session_id, "model": model},
@@ -625,14 +640,10 @@ class SessionsSendTool(BaseTool):
 
     async def execute(self, session_id: str, prompt: str, model: str = "claude-sonnet-4-6") -> ToolResult:
         """Send a message to a sub-agent via Claude CLI."""
+        proc = _SESSION_MANAGER.get(session_id)
+        if proc is None:
+            return ToolResult.from_error(f"Session '{session_id}' not found. Use sessions_spawn first.")
         try:
-            proc = subprocess.Popen(  # noqa: S603
-                ["claude", "--model", model, "--print"],  # noqa: S607
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
             stdout, stderr = proc.communicate(input=prompt, timeout=120)
             if proc.returncode != 0:
                 return ToolResult.from_error(
@@ -643,8 +654,6 @@ class SessionsSendTool(BaseTool):
                 output=stdout,
                 data={"session_id": session_id},
             )
-        except FileNotFoundError:
-            return ToolResult.from_error("'claude' CLI not found.")
         except subprocess.TimeoutExpired:
             return ToolResult.from_error("Sub-agent timed out.")
         except OSError as exc:
