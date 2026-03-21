@@ -230,3 +230,24 @@ class AgentTool(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.agent.name} - {self.tool.name}"
+
+
+class ProjectContext(TimestampedModel):
+    """Per-customer project goals and SOPs cached from S3, keyed by GitHub project."""
+
+    customer = models.ForeignKey(
+        "accounts.Customer",
+        on_delete=models.CASCADE,
+        related_name="project_contexts",
+    )
+    project_id = models.CharField(max_length=255, help_text="GitHub project node ID")
+    goals_markdown = models.TextField(blank=True, help_text="Project goals (manually set or synced)")
+    sops_snapshot = models.JSONField(default=dict, help_text="Cached SOP content from S3")
+    s3_prefix = models.CharField(max_length=512, help_text="s3://bucket/customer/projects/<name>/")
+    last_synced = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = [("customer", "project_id")]
+
+    def __str__(self) -> str:
+        return f"{self.customer}/{self.project_id}"
