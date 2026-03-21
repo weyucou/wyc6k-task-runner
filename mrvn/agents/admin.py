@@ -17,7 +17,6 @@ class AgentToolInline(admin.TabularInline):
 class AgentAdmin(admin.ModelAdmin):
     list_display = [
         "name",
-        "owner",
         "provider",
         "model_name",
         "rate_limit_display",
@@ -25,14 +24,14 @@ class AgentAdmin(admin.ModelAdmin):
         "created_datetime",
     ]
     list_filter = ["provider", "is_active", "rate_limit_enabled"]
-    search_fields = ["name", "owner__username", "description"]
+    search_fields = ["name", "description"]
     inlines = [AgentCredentialInline, AgentToolInline]
 
     fieldsets = (
         (
             None,
             {
-                "fields": ("name", "description", "owner", "is_active"),
+                "fields": ("name", "description", "is_active"),
             },
         ),
         (

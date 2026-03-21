@@ -2,7 +2,6 @@ import logging
 from enum import StrEnum
 
 from commons.models import TimestampedModel
-from django.conf import settings
 from django.db import models
 
 logger = logging.getLogger(__name__)
@@ -29,12 +28,6 @@ class Agent(TimestampedModel):
 
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
-
-    owner = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name="agents",
-    )
 
     # LLM Configuration
     provider = models.CharField(
@@ -99,7 +92,6 @@ class Agent(TimestampedModel):
     config = models.JSONField(default=dict, blank=True)
 
     class Meta:
-        unique_together = [("owner", "name")]
         ordering = ["-created_datetime"]
 
     def __str__(self) -> str:
@@ -145,9 +137,25 @@ class Agent(TimestampedModel):
         if self.tool_profile == ToolProfile.MINIMAL.value:
             return []
         if self.tool_profile == ToolProfile.CODING.value:
-            # Return coding-related tools
-            coding_prefixes = ("read", "write", "edit", "exec", "file", "code", "browser")
-            return [t for t in available_tools if any(t.startswith(p) for p in coding_prefixes)]
+            # Explicit set of tools for coding/agent-development workflows
+            coding_tools = {
+                "read",
+                "write",
+                "edit",
+                "apply_patch",
+                "exec",
+                "process",
+                "web_fetch",
+                "web_search",
+                "browser_fetch",
+                "sessions_spawn",
+                "sessions_send",
+                "image",
+                "memory_store",
+                "memory_retrieve",
+                "memory_search",
+            }
+            return [t for t in available_tools if t in coding_tools]
         if self.tool_profile == ToolProfile.MESSAGING.value:
             # Return messaging-related tools
             messaging_prefixes = ("send", "message", "notify", "email", "slack", "telegram")

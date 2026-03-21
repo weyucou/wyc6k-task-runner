@@ -202,12 +202,6 @@ class Command(BaseCommand):
             self.stdout.write("  Default agent already exists\n")
             return
 
-        # Get the first superuser as owner
-        owner = User.objects.filter(is_superuser=True).first()
-        if not owner:
-            self.stdout.write(self.style.WARNING("  No superuser found, skipping agent creation\n"))
-            return
-
         if self.non_interactive:
             provider = os.getenv("DEFAULT_LLM_PROVIDER", LLMProvider.ANTHROPIC.value)
             model = os.getenv("DEFAULT_LLM_MODEL", "claude-sonnet-4-20250514")
@@ -244,7 +238,6 @@ class Command(BaseCommand):
         Agent.objects.create(
             name="Default Assistant",
             description="Default AI assistant for Marvin",
-            owner=owner,
             provider=provider,
             model_name=model,
             base_url=base_url,
