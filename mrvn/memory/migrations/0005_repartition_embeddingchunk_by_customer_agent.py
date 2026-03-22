@@ -1,0 +1,99 @@
+# Manually crafted migration to re-partition EmbeddingChunk by (customer_id, agent_id).
+#
+# This is a DESTRUCTIVE schema migration: the old table (partitioned by agent_id only)
+# is dropped and recreated with a composite (customer_id, agent_id) partition key.
+#
+# Existing rows: if any exist at migration time they will be lost.  In production,
+# take a backup and re-index via the application before running this migration.
+# Rows with no known customer_id are written with SENTINEL_CUSTOMER_ID
+# (00000000-0000-0000-0000-000000000000) and land in the default partition.
+
+from django.db import migrations
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ("agents", "0006_agent_customer"),
+        ("memory", "0004_improve_hnsw_parameters"),
+    ]
+
+    operations = [
+        # Drop the old partitioned table (cascades to all partitions and indexes)
+        migrations.RunSQL(
+            sql="DROP TABLE IF EXISTS memory_embeddingchunk CASCADE;",
+            reverse_sql="",
+        ),
+        # Recreate as LIST-partitioned table with composite (customer_id, agent_id) key.
+        # PRIMARY KEY (id, customer_id, agent_id) satisfies PostgreSQL's requirement
+        # that the partition key is a subset of the primary key.
+        migrations.RunSQL(
+            sql="""
+            CREATE TABLE memory_embeddingchunk (
+                id BIGSERIAL,
+                customer_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000',
+                agent_id BIGINT NOT NULL REFERENCES agents_agent(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+                source VARCHAR(20) NOT NULL DEFAULT 'message',
+                source_id BIGINT NOT NULL,
+                text TEXT NOT NULL,
+                start_line INTEGER NOT NULL DEFAULT 0,
+                end_line INTEGER NOT NULL DEFAULT 0,
+                embedding vector(384) NOT NULL,
+                embedding_model VARCHAR(100) NOT NULL DEFAULT 'all-MiniLM-L6-v2',
+                content_hash VARCHAR(64) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (id, customer_id, agent_id)
+            ) PARTITION BY LIST (customer_id, agent_id);
+            """,
+            reverse_sql="DROP TABLE IF EXISTS memory_embeddingchunk CASCADE;",
+        ),
+        # Default partition: catches rows whose (customer_id, agent_id) pair has no
+        # dedicated partition yet, including legacy rows with the sentinel customer_id.
+        migrations.RunSQL(
+            sql="""
+            CREATE TABLE memory_embeddingchunk_default
+            PARTITION OF memory_embeddingchunk DEFAULT;
+            """,
+            reverse_sql="DROP TABLE IF EXISTS memory_embeddingchunk_default;",
+        ),
+        # Indexes — recreated on the parent partitioned table so they apply to all partitions.
+        migrations.RunSQL(
+            sql="""
+            CREATE INDEX memory_embeddingchunk_customer_agent_idx
+            ON memory_embeddingchunk (customer_id, agent_id);
+            """,
+            reverse_sql="DROP INDEX IF EXISTS memory_embeddingchunk_customer_agent_idx;",
+        ),
+        migrations.RunSQL(
+            sql="""
+            CREATE INDEX memory_embeddingchunk_content_hash_idx
+            ON memory_embeddingchunk (content_hash);
+            """,
+            reverse_sql="DROP INDEX IF EXISTS memory_embeddingchunk_content_hash_idx;",
+        ),
+        migrations.RunSQL(
+            sql="""
+            CREATE INDEX memory_embe_agent_source_idx
+            ON memory_embeddingchunk (agent_id, source, source_id);
+            """,
+            reverse_sql="DROP INDEX IF EXISTS memory_embe_agent_source_idx;",
+        ),
+        migrations.RunSQL(
+            sql="""
+            CREATE INDEX memory_embe_agent_hash_idx
+            ON memory_embeddingchunk (agent_id, content_hash);
+            """,
+            reverse_sql="DROP INDEX IF EXISTS memory_embe_agent_hash_idx;",
+        ),
+        # HNSW index (m=24, ef_construction=128) for fast approximate nearest-neighbour search.
+        migrations.RunSQL(
+            sql="""
+            CREATE INDEX embedding_chunk_hnsw_idx
+            ON memory_embeddingchunk
+            USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 24, ef_construction = 128);
+            """,
+            reverse_sql="DROP INDEX IF EXISTS embedding_chunk_hnsw_idx;",
+        ),
+    ]

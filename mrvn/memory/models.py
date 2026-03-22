@@ -1,11 +1,15 @@
 import logging
 from enum import StrEnum
+from uuid import UUID
 
 from commons.models import TimestampedModel
 from django.db import models
 from pgvector.django import HnswIndex, VectorField
 from psqlextra.models import PostgresPartitionedModel
 from psqlextra.types import PostgresPartitioningMethod
+
+# Sentinel UUID used for EmbeddingChunks with no known customer (legacy/unassigned rows)
+SENTINEL_CUSTOMER_ID: UUID = UUID("00000000-0000-0000-0000-000000000000")
 
 logger = logging.getLogger(__name__)
 
@@ -144,17 +148,23 @@ class ChunkSource(StrEnum):
 
 
 class EmbeddingChunk(PostgresPartitionedModel):
-    """Vector embeddings for memory search, partitioned by agent.
+    """Vector embeddings for memory search, partitioned by (customer_id, agent_id).
 
     Uses pgvector for efficient similarity search and psqlextra
-    for table partitioning on agent_id.
+    for table partitioning on composite (customer_id, agent_id) key.
+    Rows with no known customer use SENTINEL_CUSTOMER_ID and land in the default partition.
     """
 
     class PartitioningMeta:
         method = PostgresPartitioningMethod.LIST
-        key = ["agent_id"]
+        key = ["customer_id", "agent_id"]
 
     id = models.BigAutoField(primary_key=True)
+
+    # Composite partition dimensions
+    customer_id = models.UUIDField(
+        help_text="Denormalized customer ID for partition isolation. Use SENTINEL_CUSTOMER_ID for unassigned rows.",
+    )
 
     # Partition key - required for list partitioning
     agent = models.ForeignKey(

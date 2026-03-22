@@ -4,17 +4,19 @@ Implements OpenClaw-inspired memory search with:
 - Vector embeddings stored in PostgreSQL with pgvector
 - Text search for keyword matching
 - Hybrid scoring with configurable weights
-- Table partitioning by agent for performance
+- Table partitioning by (customer_id, agent_id) for performance
 """
 
 import hashlib
 import logging
 from typing import TYPE_CHECKING, Any, Literal
+from uuid import UUID
 
 from django.db.models import Q
 from pydantic import BaseModel, Field
 
 from memory.models import (
+    SENTINEL_CUSTOMER_ID,
     ChunkSource,
     ConversationSummary,
     EmbeddingCache,
@@ -29,8 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 class MemorySearchConfig(BaseModel):
-    """Configuration for memory search."""
+    """Configuration for memory search.
 
+    customer_id scopes all searches to a single tenant's data.
+    TODO: make customer_id required once Agent gains a customer_id FK (issue #2).
+    """
+
+    customer_id: UUID | None = None
     enabled: bool = True
     session_memory: bool = True  # Include session history
     chunk_size: int = 400  # Tokens per chunk
@@ -64,7 +71,8 @@ class MemorySearchService:
         """Initialize the search service.
 
         Args:
-            config: Optional search configuration.
+            config: Optional search configuration. When customer_id is set
+                    all searches are scoped to that customer's data.
         """
         self.config = config or MemorySearchConfig()
         self._embedder = None
@@ -121,12 +129,19 @@ class MemorySearchService:
         """Generate SHA256 hash for content deduplication."""
         return hashlib.sha256(text.encode()).hexdigest()
 
-    def index_message(self, message: Message, agent_id: int) -> EmbeddingChunk | None:
+    def index_message(
+        self,
+        message: Message,
+        agent_id: int,
+        customer_id: UUID | None = None,
+    ) -> EmbeddingChunk | None:
         """Index a message for vector search.
 
         Args:
             message: Message to index.
             agent_id: Agent ID for partitioning.
+            customer_id: Customer ID for partition isolation.
+                         Falls back to config.customer_id, then SENTINEL_CUSTOMER_ID.
 
         Returns:
             Created EmbeddingChunk or None if embedding failed.
@@ -135,10 +150,12 @@ class MemorySearchService:
         if not embedding:
             return None
 
+        effective_customer_id = customer_id or self.config.customer_id or SENTINEL_CUSTOMER_ID
         content_hash = self.content_hash(message.content)
 
         # Check if already indexed
         existing = EmbeddingChunk.objects.filter(
+            customer_id=effective_customer_id,
             agent_id=agent_id,
             source=ChunkSource.MESSAGE.value,
             source_id=message.id,
@@ -154,6 +171,7 @@ class MemorySearchService:
             return existing
 
         return EmbeddingChunk.objects.create(
+            customer_id=effective_customer_id,
             agent_id=agent_id,
             source=ChunkSource.MESSAGE.value,
             source_id=message.id,
@@ -163,15 +181,29 @@ class MemorySearchService:
             content_hash=content_hash,
         )
 
-    def index_summary(self, summary: ConversationSummary, agent_id: int) -> EmbeddingChunk | None:
-        """Index a conversation summary for vector search."""
+    def index_summary(
+        self,
+        summary: ConversationSummary,
+        agent_id: int,
+        customer_id: UUID | None = None,
+    ) -> EmbeddingChunk | None:
+        """Index a conversation summary for vector search.
+
+        Args:
+            summary: ConversationSummary to index.
+            agent_id: Agent ID for partitioning.
+            customer_id: Customer ID for partition isolation.
+                         Falls back to config.customer_id, then SENTINEL_CUSTOMER_ID.
+        """
         embedding = self.get_embedding(summary.summary)
         if not embedding:
             return None
 
+        effective_customer_id = customer_id or self.config.customer_id or SENTINEL_CUSTOMER_ID
         content_hash = self.content_hash(summary.summary)
 
         existing = EmbeddingChunk.objects.filter(
+            customer_id=effective_customer_id,
             agent_id=agent_id,
             source=ChunkSource.SUMMARY.value,
             source_id=summary.id,
@@ -186,6 +218,7 @@ class MemorySearchService:
             return existing
 
         return EmbeddingChunk.objects.create(
+            customer_id=effective_customer_id,
             agent_id=agent_id,
             source=ChunkSource.SUMMARY.value,
             source_id=summary.id,
@@ -198,8 +231,9 @@ class MemorySearchService:
     def text_search(
         self,
         query: str,
-        session: Session | None = None,
+        session: "Session | None" = None,
         agent_id: int | None = None,
+        customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
         """Perform text-based search on messages.
 
@@ -207,20 +241,33 @@ class MemorySearchService:
             query: Search query.
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
+            customer_id: Optional customer ID to scope results. When provided,
+                         results are restricted to messages/summaries indexed
+                         under this customer via EmbeddingChunk.
 
         Returns:
             List of search results.
         """
+        effective_customer_id = customer_id or self.config.customer_id
         results: list[MemorySearchResult] = []
         query_lower = query.lower()
         words = query_lower.split()
 
         # Search messages
-        message_qs = Message.objects.all()
-        if session:
-            message_qs = message_qs.filter(session=session)
-        elif agent_id:
-            message_qs = message_qs.filter(session__agent_id=agent_id)
+        if effective_customer_id and agent_id:
+            # Filter to messages indexed under this customer to enforce tenant isolation
+            indexed_message_ids = EmbeddingChunk.objects.filter(
+                customer_id=effective_customer_id,
+                agent_id=agent_id,
+                source=ChunkSource.MESSAGE.value,
+            ).values_list("source_id", flat=True)
+            message_qs = Message.objects.filter(pk__in=indexed_message_ids)
+        else:
+            message_qs = Message.objects.all()
+            if session:
+                message_qs = message_qs.filter(session=session)
+            elif agent_id:
+                message_qs = message_qs.filter(session__agent_id=agent_id)
 
         q_filter = Q()
         for word in words:
@@ -248,11 +295,19 @@ class MemorySearchService:
                 )
 
         # Search summaries
-        summary_qs = ConversationSummary.objects.all()
-        if session:
-            summary_qs = summary_qs.filter(session=session)
-        elif agent_id:
-            summary_qs = summary_qs.filter(session__agent_id=agent_id)
+        if effective_customer_id and agent_id:
+            indexed_summary_ids = EmbeddingChunk.objects.filter(
+                customer_id=effective_customer_id,
+                agent_id=agent_id,
+                source=ChunkSource.SUMMARY.value,
+            ).values_list("source_id", flat=True)
+            summary_qs = ConversationSummary.objects.filter(pk__in=indexed_summary_ids)
+        else:
+            summary_qs = ConversationSummary.objects.all()
+            if session:
+                summary_qs = summary_qs.filter(session=session)
+            elif agent_id:
+                summary_qs = summary_qs.filter(session__agent_id=agent_id)
 
         summaries = summary_qs.filter(summary__icontains=query)[: self.config.max_results]
         for summary in summaries:
@@ -280,8 +335,9 @@ class MemorySearchService:
     def vector_search(
         self,
         query: str,
-        session: Session | None = None,
+        session: "Session | None" = None,
         agent_id: int | None = None,
+        customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
         """Perform vector-based semantic search using pgvector.
 
@@ -289,6 +345,7 @@ class MemorySearchService:
             query: Search query.
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
+            customer_id: Optional customer ID to scope results to a single tenant.
 
         Returns:
             List of search results sorted by similarity.
@@ -309,6 +366,10 @@ class MemorySearchService:
 
         # Query EmbeddingChunk with pgvector cosine distance
         chunk_qs = EmbeddingChunk.objects.all()
+
+        effective_customer_id = customer_id or self.config.customer_id
+        if effective_customer_id:
+            chunk_qs = chunk_qs.filter(customer_id=effective_customer_id)
 
         if agent_id:
             chunk_qs = chunk_qs.filter(agent_id=agent_id)
@@ -341,8 +402,9 @@ class MemorySearchService:
     def hybrid_search(
         self,
         query: str,
-        session: Session | None = None,
+        session: "Session | None" = None,
         agent_id: int | None = None,
+        customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
         """Perform hybrid vector + text search.
 
@@ -352,6 +414,7 @@ class MemorySearchService:
             query: Search query.
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
+            customer_id: Optional customer ID to scope results to a single tenant.
 
         Returns:
             List of search results with combined scores.
@@ -359,11 +422,12 @@ class MemorySearchService:
         if not self.config.enabled:
             return []
 
+        effective_customer_id = customer_id or self.config.customer_id
         vector_weight = self.config.hybrid_weights.get("vector", 0.7)
         text_weight = self.config.hybrid_weights.get("text", 0.3)
 
-        vector_results = self.vector_search(query, session, agent_id)
-        text_results = self.text_search(query, session, agent_id)
+        vector_results = self.vector_search(query, session, agent_id, effective_customer_id)
+        text_results = self.text_search(query, session, agent_id, effective_customer_id)
 
         # Combine scores
         combined: dict[str, MemorySearchResult] = {}
@@ -388,9 +452,10 @@ class MemorySearchService:
     def search(
         self,
         query: str,
-        session: Session | None = None,
+        session: "Session | None" = None,
         agent_id: int | None = None,
         search_type: str = "hybrid",
+        customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
         """Search agent memory.
 
@@ -399,16 +464,17 @@ class MemorySearchService:
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
             search_type: Type of search ("hybrid", "vector", "text").
+            customer_id: Optional customer ID to scope results to a single tenant.
 
         Returns:
             List of search results.
         """
         if search_type == "vector":
-            return self.vector_search(query, session, agent_id)
+            return self.vector_search(query, session, agent_id, customer_id)
         if search_type == "text":
-            return self.text_search(query, session, agent_id)
-        return self.hybrid_search(query, session, agent_id)
+            return self.text_search(query, session, agent_id, customer_id)
+        return self.hybrid_search(query, session, agent_id, customer_id)
 
 
-# Global search service instance
+# Global search service instance (no customer_id — use per-request service for tenant-scoped searches)
 memory_search_service = MemorySearchService()

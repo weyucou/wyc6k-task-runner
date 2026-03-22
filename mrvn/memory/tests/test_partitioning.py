@@ -1,20 +1,20 @@
 """Tests for memory partitioning functionality."""
 
 from unittest.mock import MagicMock
+from uuid import UUID
 
+from accounts.models import Customer
 from agents.models import Agent
-from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 
-from memory.models import EmbeddingChunk
+from memory.models import SENTINEL_CUSTOMER_ID, EmbeddingChunk
 from memory.partitioning import (
     AgentListPartitioningStrategy,
     PostgresListPartition,
+    _partition_name,
     get_partitioning_manager,
 )
-
-User = get_user_model()
 
 
 class PostgresListPartitionTests(TestCase):
@@ -22,91 +22,158 @@ class PostgresListPartitionTests(TestCase):
 
     def test_name_returns_partition_name(self):
         """Test that name() returns the partition name."""
-        partition = PostgresListPartition(name="agent_1", values=[1])
-        self.assertEqual(partition.name(), "agent_1")
+        partition = PostgresListPartition(name="abc123_1", values=[("abc123", 1)])
+        self.assertEqual(partition.name(), "abc123_1")
 
     def test_deconstruct_returns_dict_with_values(self):
         """Test that deconstruct() returns dict with values."""
-        partition = PostgresListPartition(name="agent_42", values=[42])
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        partition = PostgresListPartition(
+            name=_partition_name(customer_id, 42),
+            values=[(customer_id, 42)],
+        )
         result = partition.deconstruct()
 
         self.assertIn("values", result)
-        self.assertEqual(result["values"], [42])
+        self.assertEqual(result["values"], [(customer_id, 42)])
 
     def test_partition_with_multiple_values(self):
-        """Test partition can hold multiple values."""
-        partition = PostgresListPartition(name="multi_agent", values=[1, 2, 3])
-        self.assertEqual(partition.values, [1, 2, 3])
-        self.assertEqual(partition.deconstruct()["values"], [1, 2, 3])
+        """Test partition can hold multiple composite values."""
+        cid1 = UUID("01959b3e-0000-7000-b000-000000000001")
+        cid2 = UUID("01959b3e-0000-7000-b000-000000000002")
+        partition = PostgresListPartition(
+            name="multi",
+            values=[(cid1, 1), (cid2, 1)],
+        )
+        self.assertEqual(partition.values, [(cid1, 1), (cid2, 1)])
+        self.assertEqual(partition.deconstruct()["values"], [(cid1, 1), (cid2, 1)])
 
-    def test_create_calls_schema_editor(self):
-        """Test that create() calls schema_editor.add_list_partition."""
-        partition = PostgresListPartition(name="agent_5", values=[5])
+    def test_create_calls_schema_editor_composite(self):
+        """Test that create() uses raw SQL for composite (tuple) values."""
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        partition = PostgresListPartition(
+            name=_partition_name(customer_id, 5),
+            values=[(customer_id, 5)],
+        )
         mock_model = MagicMock()
+        mock_model._meta.db_table = "memory_embeddingchunk"
         mock_schema_editor = MagicMock()
 
         partition.create(model=mock_model, schema_editor=mock_schema_editor, comment="test")
 
-        mock_schema_editor.add_list_partition.assert_called_once_with(
-            model=mock_model,
-            name="agent_5",
-            values=[5],
-            comment="test",
-        )
+        # Should call execute() with raw SQL (not add_list_partition) for tuple values
+        mock_schema_editor.execute.assert_called_once()
+        sql = mock_schema_editor.execute.call_args[0][0]
+        self.assertIn("CREATE TABLE", sql)
+        self.assertIn("FOR VALUES IN", sql)
+        self.assertIn(str(customer_id), sql)
 
     def test_delete_calls_schema_editor(self):
         """Test that delete() calls schema_editor.delete_partition."""
-        partition = PostgresListPartition(name="agent_5", values=[5])
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        name = _partition_name(customer_id, 5)
+        partition = PostgresListPartition(name=name, values=[(customer_id, 5)])
         mock_model = MagicMock()
         mock_schema_editor = MagicMock()
 
         partition.delete(model=mock_model, schema_editor=mock_schema_editor)
 
-        mock_schema_editor.delete_partition.assert_called_once_with(mock_model, "agent_5")
+        mock_schema_editor.delete_partition.assert_called_once_with(mock_model, name)
+
+
+class PartitionNameTests(TestCase):
+    """Tests for the _partition_name helper."""
+
+    def test_name_is_deterministic(self):
+        """Same (customer_id, agent_id) always produces the same name."""
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        self.assertEqual(_partition_name(customer_id, 7), _partition_name(customer_id, 7))
+
+    def test_name_differs_by_customer(self):
+        """Different customer_ids produce different names."""
+        cid1 = UUID("01959b3e-0000-7000-b000-000000000001")
+        cid2 = UUID("ffffffff-0000-7000-b000-000000000002")
+        self.assertNotEqual(_partition_name(cid1, 1), _partition_name(cid2, 1))
+
+    def test_name_differs_by_agent(self):
+        """Different agent_ids produce different names."""
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        self.assertNotEqual(_partition_name(customer_id, 1), _partition_name(customer_id, 2))
+
+    def test_full_table_name_within_postgres_limit(self):
+        """Full partition table name stays within PostgreSQL's 63-char identifier limit."""
+        customer_id = UUID("01959b3e-1234-7000-b000-123456789abc")
+        # Use a large agent_id to test the worst case
+        name = _partition_name(customer_id, 9_999_999_999_999_999_999)
+        full_name = f"memory_embeddingchunk_{name}"
+        self.assertLessEqual(len(full_name), 63, f"Name too long: {full_name!r}")
 
 
 class AgentListPartitioningStrategyTests(TransactionTestCase):
     """Tests for AgentListPartitioningStrategy."""
 
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="testuser",
-            email="test@example.com",
-            password="testpass123",  # noqa: S106
-        )
+    def _make_customer(self, name: str = "Test Customer") -> Customer:
+        return Customer.objects.create(name=name)
 
-    def test_to_create_yields_partitions_for_agents(self):
-        """Test that to_create() yields partition for each agent."""
-        agent1 = Agent.objects.create(
-            name="Agent 1",
-            owner=self.user,
-            model_name="test-model",
-        )
-        agent2 = Agent.objects.create(
-            name="Agent 2",
-            owner=self.user,
-            model_name="test-model",
+    def _make_agent(self, name: str = "Agent") -> Agent:
+        return Agent.objects.create(name=name, model_name="test-model")
+
+    def test_to_create_yields_partitions_for_indexed_pairs(self):
+        """to_create() yields partitions for each unique (customer_id, agent_id) pair."""
+        from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
+
+        customer = self._make_customer()
+        agent = self._make_agent()
+
+        # Create partition and insert a chunk so the strategy can discover the pair
+        with connection.schema_editor() as schema_editor:
+            if isinstance(schema_editor, PostgresSchemaEditor):
+                partition = PostgresListPartition(
+                    name=_partition_name(customer.id, agent.id),
+                    values=[(customer.id, agent.id)],
+                )
+                partition.create(model=EmbeddingChunk, schema_editor=schema_editor)
+
+        EmbeddingChunk.objects.create(
+            customer_id=customer.id,
+            agent=agent,
+            source="message",
+            source_id=1,
+            text="hello",
+            embedding=[0.1] * 384,
+            content_hash="hash1",
         )
 
         strategy = AgentListPartitioningStrategy()
         partitions = list(strategy.to_create())
 
-        # Should have partitions for both agents
+        pair_names = [p.name() for p in partitions]
+        self.assertIn(_partition_name(customer.id, agent.id), pair_names)
+
+    def test_to_create_excludes_sentinel_customer(self):
+        """to_create() does not yield partitions for the sentinel customer_id."""
+        agent = self._make_agent()
+
+        # Insert a chunk with sentinel customer_id (goes to default partition)
+        EmbeddingChunk.objects.create(
+            customer_id=SENTINEL_CUSTOMER_ID,
+            agent=agent,
+            source="message",
+            source_id=1,
+            text="sentinel chunk",
+            embedding=[0.1] * 384,
+            content_hash="sentinelhash",
+        )
+
+        strategy = AgentListPartitioningStrategy()
+        partitions = list(strategy.to_create())
+
+        sentinel_name = _partition_name(SENTINEL_CUSTOMER_ID, agent.id)
         partition_names = [p.name() for p in partitions]
-        self.assertIn(f"agent_{agent1.id}", partition_names)
-        self.assertIn(f"agent_{agent2.id}", partition_names)
+        self.assertNotIn(sentinel_name, partition_names)
 
-        # Verify partition values
-        for partition in partitions:
-            if partition.name() == f"agent_{agent1.id}":
-                self.assertEqual(partition.values, [agent1.id])
-            elif partition.name() == f"agent_{agent2.id}":
-                self.assertEqual(partition.values, [agent2.id])
-
-    def test_to_create_empty_when_no_agents(self):
-        """Test that to_create() yields nothing when no agents exist."""
-        # Ensure no agents exist
+    def test_to_create_empty_when_no_non_sentinel_chunks(self):
+        """to_create() yields nothing when there are no non-sentinel chunks."""
         Agent.objects.all().delete()
 
         strategy = AgentListPartitioningStrategy()
@@ -115,17 +182,9 @@ class AgentListPartitioningStrategyTests(TransactionTestCase):
         self.assertEqual(len(partitions), 0)
 
     def test_to_delete_yields_nothing(self):
-        """Test that to_delete() is empty (no auto-deletion)."""
-        Agent.objects.create(
-            name="Agent",
-            owner=self.user,
-            model_name="test-model",
-        )
-
+        """to_delete() is empty (no auto-deletion)."""
         strategy = AgentListPartitioningStrategy()
-        partitions = list(strategy.to_delete())
-
-        self.assertEqual(len(partitions), 0)
+        self.assertEqual(list(strategy.to_delete()), [])
 
 
 class GetPartitioningManagerTests(TestCase):
@@ -146,14 +205,6 @@ class GetPartitioningManagerTests(TestCase):
 
 class PartitionIntegrationTests(TransactionTestCase):
     """Integration tests for partition creation/deletion."""
-
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="integrationuser",
-            email="integration@example.com",
-            password="testpass123",  # noqa: S106
-        )
 
     def _partition_exists(self, partition_name: str) -> bool:
         """Check if a partition exists in the database."""
@@ -186,128 +237,102 @@ class PartitionIntegrationTests(TransactionTestCase):
             )
             return [row[0] for row in cursor.fetchall()]
 
+    def _make_customer(self, name: str = "Test Customer") -> Customer:
+        return Customer.objects.create(name=name)
+
+    def _make_agent(self, name: str = "Test Agent") -> Agent:
+        return Agent.objects.create(name=name, model_name="test-model")
+
     def test_partition_creation_via_strategy(self):
-        """Test that partitions can be created for agents via schema editor."""
+        """Partitions can be created for (customer_id, agent_id) pairs."""
         from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
 
-        agent = Agent.objects.create(
-            name="Partition Test Agent",
-            owner=self.user,
-            model_name="test-model",
-        )
+        customer = self._make_customer("Partition Test Customer")
+        agent = self._make_agent("Partition Test Agent")
 
-        partition_name = f"memory_embeddingchunk_agent_{agent.id}"
+        name = _partition_name(customer.id, agent.id)
+        partition_table = f"memory_embeddingchunk_{name}"
 
-        # Create partition using schema editor
         with connection.schema_editor() as schema_editor:
             if isinstance(schema_editor, PostgresSchemaEditor):
                 partition = PostgresListPartition(
-                    name=f"agent_{agent.id}",
-                    values=[agent.id],
-                )
-                partition.create(
-                    model=EmbeddingChunk,
-                    schema_editor=schema_editor,
-                )
-
-        # Verify partition exists
-        self.assertTrue(
-            self._partition_exists(partition_name),
-            f"Partition {partition_name} should exist after creation",
-        )
-
-    def test_partition_deletion_via_strategy(self):
-        """Test that partitions can be deleted via schema editor."""
-        from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
-
-        agent = Agent.objects.create(
-            name="Delete Partition Test",
-            owner=self.user,
-            model_name="test-model",
-        )
-
-        partition_name = f"memory_embeddingchunk_agent_{agent.id}"
-
-        # First create the partition
-        with connection.schema_editor() as schema_editor:
-            if isinstance(schema_editor, PostgresSchemaEditor):
-                partition = PostgresListPartition(
-                    name=f"agent_{agent.id}",
-                    values=[agent.id],
+                    name=name,
+                    values=[(customer.id, agent.id)],
                 )
                 partition.create(model=EmbeddingChunk, schema_editor=schema_editor)
 
-        # Verify it exists
-        self.assertTrue(self._partition_exists(partition_name))
+        self.assertTrue(
+            self._partition_exists(partition_table),
+            f"Partition {partition_table} should exist after creation",
+        )
 
-        # Now delete it
+    def test_partition_deletion_via_strategy(self):
+        """Partitions can be deleted via schema editor."""
+        from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
+
+        customer = self._make_customer("Delete Customer")
+        agent = self._make_agent("Delete Agent")
+        name = _partition_name(customer.id, agent.id)
+        partition_table = f"memory_embeddingchunk_{name}"
+
         with connection.schema_editor() as schema_editor:
             if isinstance(schema_editor, PostgresSchemaEditor):
-                partition = PostgresListPartition(
-                    name=f"agent_{agent.id}",
-                    values=[agent.id],
-                )
+                partition = PostgresListPartition(name=name, values=[(customer.id, agent.id)])
+                partition.create(model=EmbeddingChunk, schema_editor=schema_editor)
+
+        self.assertTrue(self._partition_exists(partition_table))
+
+        with connection.schema_editor() as schema_editor:
+            if isinstance(schema_editor, PostgresSchemaEditor):
+                partition = PostgresListPartition(name=name, values=[(customer.id, agent.id)])
                 partition.delete(model=EmbeddingChunk, schema_editor=schema_editor)
 
-        # Verify partition is deleted
         self.assertFalse(
-            self._partition_exists(partition_name),
-            f"Partition {partition_name} should not exist after deletion",
+            self._partition_exists(partition_table),
+            f"Partition {partition_table} should not exist after deletion",
         )
 
     def test_default_partition_exists(self):
-        """Test that the default partition exists for unassigned agents."""
-        # The default partition should exist from migrations
+        """The default partition exists from migrations."""
         partitions = self._list_partitions()
         self.assertIn("memory_embeddingchunk_default", partitions)
 
     def test_data_routes_to_correct_partition(self):
-        """Test that data is routed to the correct agent partition."""
+        """Data is routed to the correct (customer_id, agent_id) partition."""
         from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
 
-        agent = Agent.objects.create(
-            name="Data Routing Test",
-            owner=self.user,
-            model_name="test-model",
-        )
+        customer = self._make_customer("Routing Customer")
+        agent = self._make_agent("Routing Agent")
+        name = _partition_name(customer.id, agent.id)
 
-        # Create partition for this agent
         with connection.schema_editor() as schema_editor:
             if isinstance(schema_editor, PostgresSchemaEditor):
-                partition = PostgresListPartition(
-                    name=f"agent_{agent.id}",
-                    values=[agent.id],
-                )
+                partition = PostgresListPartition(name=name, values=[(customer.id, agent.id)])
                 partition.create(model=EmbeddingChunk, schema_editor=schema_editor)
 
-        # Insert data for this agent
         chunk = EmbeddingChunk.objects.create(
+            customer_id=customer.id,
             agent=agent,
             source="message",
             source_id=1,
             text="Test embedding chunk",
-            embedding=[0.1] * 384,  # 384-dimensional vector
+            embedding=[0.1] * 384,
             content_hash="testhash123",
         )
 
-        # Verify data was inserted
         self.assertIsNotNone(chunk.id)
+        self.assertEqual(chunk.customer_id, customer.id)
         self.assertEqual(chunk.agent_id, agent.id)
 
-        # Query back and verify
-        retrieved = EmbeddingChunk.objects.get(id=chunk.id, agent_id=agent.id)
+        retrieved = EmbeddingChunk.objects.get(id=chunk.id, customer_id=customer.id, agent_id=agent.id)
         self.assertEqual(retrieved.text, "Test embedding chunk")
 
-    def test_data_routes_to_default_partition_without_agent_partition(self):
-        """Test that data routes to default partition when no agent partition exists."""
-        agent = Agent.objects.create(
-            name="Default Partition Test",
-            owner=self.user,
-            model_name="test-model",
-        )
+    def test_data_routes_to_default_partition_for_sentinel(self):
+        """Data with sentinel customer_id routes to the default partition."""
+        agent = self._make_agent("Sentinel Agent")
 
-        # Don't create a specific partition - data should go to default
         chunk = EmbeddingChunk.objects.create(
+            customer_id=SENTINEL_CUSTOMER_ID,
             agent=agent,
             source="message",
             source_id=1,
@@ -316,44 +341,101 @@ class PartitionIntegrationTests(TransactionTestCase):
             content_hash="defaulthash123",
         )
 
-        # Data should still be queryable
         self.assertIsNotNone(chunk.id)
-        retrieved = EmbeddingChunk.objects.get(id=chunk.id, agent_id=agent.id)
+        retrieved = EmbeddingChunk.objects.get(id=chunk.id, customer_id=SENTINEL_CUSTOMER_ID, agent_id=agent.id)
         self.assertEqual(retrieved.text, "Test in default partition")
+
+    def test_cross_customer_isolation(self):
+        """Agents in different customers cannot read each other's chunks."""
+        from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
+
+        customer_a = self._make_customer("Customer A")
+        customer_b = self._make_customer("Customer B")
+        agent_a = self._make_agent("Agent A")
+        agent_b = self._make_agent("Agent B")
+
+        # Create partitions for both pairs
+        with connection.schema_editor() as schema_editor:
+            if isinstance(schema_editor, PostgresSchemaEditor):
+                for cid, aid in [(customer_a.id, agent_a.id), (customer_b.id, agent_b.id)]:
+                    PostgresListPartition(
+                        name=_partition_name(cid, aid),
+                        values=[(cid, aid)],
+                    ).create(model=EmbeddingChunk, schema_editor=schema_editor)
+
+        # Index one chunk per customer
+        EmbeddingChunk.objects.create(
+            customer_id=customer_a.id,
+            agent=agent_a,
+            source="message",
+            source_id=10,
+            text="Customer A secret",
+            embedding=[0.1] * 384,
+            content_hash="hash_a",
+        )
+        EmbeddingChunk.objects.create(
+            customer_id=customer_b.id,
+            agent=agent_b,
+            source="message",
+            source_id=20,
+            text="Customer B secret",
+            embedding=[0.2] * 384,
+            content_hash="hash_b",
+        )
+
+        # Customer A query must not see Customer B's chunk
+        a_chunks = list(EmbeddingChunk.objects.filter(customer_id=customer_a.id).values_list("text", flat=True))
+        self.assertIn("Customer A secret", a_chunks)
+        self.assertNotIn("Customer B secret", a_chunks)
+
+        # Customer B query must not see Customer A's chunk
+        b_chunks = list(EmbeddingChunk.objects.filter(customer_id=customer_b.id).values_list("text", flat=True))
+        self.assertIn("Customer B secret", b_chunks)
+        self.assertNotIn("Customer A secret", b_chunks)
 
 
 class PartitioningManagerPlanTests(TransactionTestCase):
     """Tests for partitioning manager plan generation."""
 
-    def setUp(self):
-        """Set up test data."""
-        self.user = User.objects.create_user(
-            username="planuser",
-            email="plan@example.com",
-            password="testpass123",  # noqa: S106
+    def _make_customer(self, name: str = "Plan Customer") -> Customer:
+        return Customer.objects.create(name=name)
+
+    def _make_agent(self, name: str = "Plan Agent") -> Agent:
+        return Agent.objects.create(name=name, model_name="test")
+
+    def test_manager_plan_includes_indexed_pairs(self):
+        """Partitioning manager plan includes partitions for indexed (customer_id, agent_id) pairs."""
+        from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
+
+        customer = self._make_customer("Plan Customer 1")
+        agent = self._make_agent("Plan Agent 1")
+        name = _partition_name(customer.id, agent.id)
+
+        # Create partition and insert a chunk so the strategy discovers the pair
+        with connection.schema_editor() as schema_editor:
+            if isinstance(schema_editor, PostgresSchemaEditor):
+                PostgresListPartition(name=name, values=[(customer.id, agent.id)]).create(
+                    model=EmbeddingChunk, schema_editor=schema_editor
+                )
+
+        EmbeddingChunk.objects.create(
+            customer_id=customer.id,
+            agent=agent,
+            source="message",
+            source_id=1,
+            text="plan test",
+            embedding=[0.1] * 384,
+            content_hash="planhash",
         )
 
-    def test_manager_plan_includes_new_agents(self):
-        """Test that partitioning manager plan includes partitions for new agents."""
-        # Create some agents
-        agent1 = Agent.objects.create(name="Plan Agent 1", owner=self.user, model_name="test")
-        agent2 = Agent.objects.create(name="Plan Agent 2", owner=self.user, model_name="test")
-
         manager = get_partitioning_manager()
         plan = manager.plan()
 
-        # Plan should include partitions to create (creations is a list)
         create_names = [p.name() for p in plan.creations]
-
-        self.assertIn(f"agent_{agent1.id}", create_names)
-        self.assertIn(f"agent_{agent2.id}", create_names)
+        self.assertIn(name, create_names)
 
     def test_manager_plan_no_deletions(self):
-        """Test that partitioning manager plan has no deletions (by design)."""
-        Agent.objects.create(name="No Delete Agent", owner=self.user, model_name="test")
-
+        """Partitioning manager plan has no deletions (by design)."""
         manager = get_partitioning_manager()
         plan = manager.plan()
-
-        # Should have no deletions (deletions is a list)
         self.assertEqual(len(plan.deletions), 0)
