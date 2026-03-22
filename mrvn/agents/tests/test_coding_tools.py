@@ -563,11 +563,14 @@ class AskccRunToolTests(IsolatedAsyncioTestCase):
         tool = AskccRunTool(config={"timeout": 1})
         mock_proc = MagicMock()
         mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_proc.wait = AsyncMock()
         with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc):
             result = await tool.execute(action="develop", issue_url=_ISSUE_URL)
         self.assertEqual(result.status, ToolStatus.ERROR)
         self.assertIn("timed out", result.error.lower())
         self.assertIn("1", result.error)
+        mock_proc.kill.assert_called_once()
+        mock_proc.wait.assert_awaited_once()
 
     async def test_validate_params_requires_action(self) -> None:
         is_valid, error = self.tool.validate_params({"issue_url": _ISSUE_URL})

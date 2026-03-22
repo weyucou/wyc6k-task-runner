@@ -972,6 +972,8 @@ class AskccRunTool(BaseTool):
                 data={"return_code": proc.returncode, "action": action, "issue_url": issue_url},
             )
         except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
             return ToolResult.from_error(f"askcc timed out after {timeout}s.")
         except FileNotFoundError:
             return ToolResult.from_error("'askcc' CLI not found. Ensure it is installed and on PATH.")
