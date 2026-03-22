@@ -163,6 +163,7 @@ class EmbeddingChunk(PostgresPartitionedModel):
 
     # Composite partition dimensions
     customer_id = models.UUIDField(
+        default=SENTINEL_CUSTOMER_ID,
         help_text="Denormalized customer ID for partition isolation. Use SENTINEL_CUSTOMER_ID for unassigned rows.",
     )
 
