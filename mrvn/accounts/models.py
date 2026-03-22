@@ -1,10 +1,17 @@
 import logging
+from enum import StrEnum
 
 from commons.models import TimestampedModel, UUID7Field
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 logger = logging.getLogger(__name__)
+
+
+class CredentialService(StrEnum):
+    github = "github"
+    anthropic = "anthropic"
+    gemini = "gemini"
 
 
 class Customer(TimestampedModel):
@@ -24,6 +31,20 @@ class Customer(TimestampedModel):
 
     def __str__(self) -> str:
         return f"{self.name}({self.id})"
+
+
+class CustomerCredential(TimestampedModel):
+    """Maps a customer's service to its secret ARN in AWS Secrets Manager."""
+
+    customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="credentials")
+    service = models.CharField(max_length=64, choices=[(s.value, s.name) for s in CredentialService])
+    secret_arn = models.CharField(max_length=512)
+
+    class Meta:
+        unique_together = [("customer", "service")]
+
+    def __str__(self) -> str:
+        return f"{self.customer} / {self.service}"
 
 
 class CustomUser(AbstractUser):
