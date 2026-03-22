@@ -1,11 +1,14 @@
 import logging
 from enum import StrEnum
+from uuid import UUID
 
 from commons.models import TimestampedModel
 from django.db import models
 from pgvector.django import HnswIndex, VectorField
 from psqlextra.models import PostgresPartitionedModel
 from psqlextra.types import PostgresPartitioningMethod
+
+SENTINEL_CUSTOMER_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +172,15 @@ class EmbeddingChunk(PostgresPartitionedModel):
 
     class PartitioningMeta:
         method = PostgresPartitioningMethod.LIST
-        key = ["agent_id"]
+        key = ["customer_id", "agent_id"]
 
     id = models.BigAutoField(primary_key=True)
+
+    # Partition dimensions - customer for tenant isolation (denormalized), agent for routing
+    customer_id = models.UUIDField(
+        default=SENTINEL_CUSTOMER_ID,
+        help_text="Customer ID for tenant isolation (denormalized)",
+    )
 
     # Partition key - required for list partitioning
     agent = models.ForeignKey(
