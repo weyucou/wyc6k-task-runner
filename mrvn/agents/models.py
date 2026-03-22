@@ -144,6 +144,8 @@ class Agent(TimestampedModel):
                 "edit",
                 "apply_patch",
                 "exec",
+                "github_issue",
+                "github_pr",
                 "process",
                 "web_fetch",
                 "web_search",

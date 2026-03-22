@@ -211,7 +211,7 @@ class ApplyPatchTool(BaseTool):
             )
         except FileNotFoundError:
             return ToolResult.from_error("'patch' command not found. Install it with: apt install patch")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult.from_error("patch command timed out")
         except OSError as exc:
             return ToolResult.from_error(f"Error applying patch: {exc}")
@@ -275,10 +275,225 @@ class ExecTool(BaseTool):
                 error=f"Command exited with code {proc.returncode}.",
                 data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult.from_error(f"Command timed out after {timeout}s.")
         except OSError as exc:
             return ToolResult.from_error(f"Error executing command: {exc}")
+
+
+async def _run_gh_command(cmd: list[str], token: str) -> ToolResult:
+    """Run a gh CLI command with GITHUB_TOKEN injected into the environment."""
+    env = {**os.environ, "GITHUB_TOKEN": token}
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        out = stdout.decode(errors="replace")
+        err = stderr.decode(errors="replace")
+        if proc.returncode == 0:
+            return ToolResult.success(
+                output=out,
+                data={"return_code": proc.returncode, "stderr": err},
+            )
+        return ToolResult.from_error(
+            f"gh exited with code {proc.returncode}: {err}",
+            output=out,
+        )
+    except FileNotFoundError:
+        return ToolResult.from_error("'gh' CLI not found. Install it from https://cli.github.com/")
+    except TimeoutError:
+        return ToolResult.from_error("gh command timed out after 30s.")
+    except OSError as exc:
+        return ToolResult.from_error(f"Error running gh: {exc}")
+
+
+class GitHubIssueTool(BaseTool):
+    """Interact with GitHub issues via the gh CLI."""
+
+    name = "github_issue"
+    description = (
+        "Read and update GitHub issues using the gh CLI. Actions: view, comment, add_label, remove_label, close."
+    )
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action to perform: 'view', 'comment', 'add_label', 'remove_label', 'close'.",
+            required=True,
+            enum=["view", "comment", "add_label", "remove_label", "close"],
+        ),
+        ToolParameter(
+            name="issue_url",
+            type="string",
+            description="Full URL of the GitHub issue (e.g. https://github.com/owner/repo/issues/1).",
+            required=True,
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="Comment body (required for action=comment).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="label",
+            type="string",
+            description="Label name (required for add_label and remove_label).",
+            required=False,
+            default="",
+        ),
+    ]
+
+    async def execute(
+        self,
+        action: str,
+        issue_url: str,
+        body: str = "",
+        label: str = "",
+    ) -> ToolResult:
+        """Execute a GitHub issue action."""
+        token = self.config.get("GITHUB_TOKEN", "")
+        if not token:
+            return ToolResult.from_error(
+                "GITHUB_TOKEN is not set in tool config. Provide it via the AgentTool config field."
+            )
+
+        if action == "view":
+            cmd = ["gh", "issue", "view", issue_url]
+        elif action == "comment":
+            if not body:
+                return ToolResult.from_error("body is required for action=comment")
+            cmd = ["gh", "issue", "comment", issue_url, "--body", body]
+        elif action == "add_label":
+            if not label:
+                return ToolResult.from_error("label is required for action=add_label")
+            cmd = ["gh", "issue", "edit", issue_url, "--add-label", label]
+        elif action == "remove_label":
+            if not label:
+                return ToolResult.from_error("label is required for action=remove_label")
+            cmd = ["gh", "issue", "edit", issue_url, "--remove-label", label]
+        elif action == "close":
+            cmd = ["gh", "issue", "close", issue_url]
+        else:
+            return ToolResult.from_error(f"Unknown action: {action}")
+
+        return await _run_gh_command(cmd, token)
+
+
+class GitHubPRTool(BaseTool):
+    """Interact with GitHub pull requests via the gh CLI."""
+
+    name = "github_pr"
+    description = "Create and update GitHub pull requests using the gh CLI. Actions: create, view, update_body."
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action to perform: 'create', 'view', 'update_body'.",
+            required=True,
+            enum=["create", "view", "update_body"],
+        ),
+        ToolParameter(
+            name="pr_url",
+            type="string",
+            description="Full URL of the pull request (required for view and update_body).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="repo",
+            type="string",
+            description="Repository in 'owner/repo' format (used with action=create).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="title",
+            type="string",
+            description="PR title (required for action=create).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="PR body/description (used with create and update_body).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="base_branch",
+            type="string",
+            description="Base branch for the PR (required for action=create).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="head_branch",
+            type="string",
+            description="Head branch for the PR (required for action=create).",
+            required=False,
+            default="",
+        ),
+    ]
+
+    async def execute(
+        self,
+        action: str,
+        pr_url: str = "",
+        repo: str = "",
+        title: str = "",
+        body: str = "",
+        base_branch: str = "",
+        head_branch: str = "",
+    ) -> ToolResult:
+        """Execute a GitHub PR action."""
+        token = self.config.get("GITHUB_TOKEN", "")
+        if not token:
+            return ToolResult.from_error(
+                "GITHUB_TOKEN is not set in tool config. Provide it via the AgentTool config field."
+            )
+
+        if action == "view":
+            if not pr_url:
+                return ToolResult.from_error("pr_url is required for action=view")
+            cmd = ["gh", "pr", "view", pr_url]
+        elif action == "create":
+            if not title:
+                return ToolResult.from_error("title is required for action=create")
+            if not base_branch:
+                return ToolResult.from_error("base_branch is required for action=create")
+            if not head_branch:
+                return ToolResult.from_error("head_branch is required for action=create")
+            cmd = [
+                "gh",
+                "pr",
+                "create",
+                "--title",
+                title,
+                "--body",
+                body,
+                "--base",
+                base_branch,
+                "--head",
+                head_branch,
+            ]
+            if repo:
+                cmd += ["--repo", repo]
+        elif action == "update_body":
+            if not pr_url:
+                return ToolResult.from_error("pr_url is required for action=update_body")
+            cmd = ["gh", "pr", "edit", pr_url, "--body", body]
+        else:
+            return ToolResult.from_error(f"Unknown action: {action}")
+
+        return await _run_gh_command(cmd, token)
 
 
 # Background process registry: session_id -> (process, stdout_buffer, stderr_buffer, thread)
@@ -487,7 +702,6 @@ class RealWebSearchTool(BaseTool):
                 "Obtain a key from https://api.search.brave.com/ and set it."
             )
 
-        import json  # noqa: PLC0415
 
         count = min(max(1, num_results), 10)
         url = f"https://api.search.brave.com/res/v1/web/search?q={query}&count={count}"
@@ -926,6 +1140,8 @@ def register_coding_tools(registry: Any) -> None:
         EditTool(),
         ApplyPatchTool(),
         ExecTool(),
+        GitHubIssueTool(),
+        GitHubPRTool(),
         ProcessTool(),
         WebFetchTool(),
         RealWebSearchTool(),

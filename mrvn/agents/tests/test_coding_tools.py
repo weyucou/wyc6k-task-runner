@@ -1,28 +1,32 @@
 """Tests for coding tools: read, write, edit, apply_patch, exec, process,
-web_fetch, web_search, sessions_spawn, sessions_send, image, browser."""
+web_fetch, web_search, sessions_spawn, sessions_send, image, browser,
+github_issue, github_pr.
+"""
 
 import os
 import tempfile
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from agents.tools.base import ToolStatus
+from agents.tools.base import ToolResult, ToolStatus
 from agents.tools.coding import (
+    _SESSION_MANAGER,
     ApplyPatchTool,
     BrowserTool,
     EditTool,
     ExecTool,
+    GitHubIssueTool,
+    GitHubPRTool,
     ImageTool,
     ProcessTool,
-    RealWebSearchTool,
     ReadTool,
+    RealWebSearchTool,
     SessionsSendTool,
     SessionsSpawnTool,
     WebFetchTool,
     WriteTool,
-    _SESSION_MANAGER,
+    _run_gh_command,
 )
-
 
 # ---------------------------------------------------------------------------
 # ReadTool
@@ -244,7 +248,7 @@ class ProcessToolTests(IsolatedAsyncioTestCase):
         self.tool = ProcessTool()
 
     async def test_list_empty(self) -> None:
-        from agents.tools.coding import _BACKGROUND_PROCESSES, _BACKGROUND_LOCK
+        from agents.tools.coding import _BACKGROUND_LOCK, _BACKGROUND_PROCESSES
 
         with _BACKGROUND_LOCK:
             _BACKGROUND_PROCESSES.clear()
@@ -252,7 +256,7 @@ class ProcessToolTests(IsolatedAsyncioTestCase):
         self.assertEqual(result.status, ToolStatus.SUCCESS)
 
     async def test_start_and_status(self) -> None:
-        from agents.tools.coding import _BACKGROUND_PROCESSES, _BACKGROUND_LOCK
+        from agents.tools.coding import _BACKGROUND_LOCK, _BACKGROUND_PROCESSES
 
         with _BACKGROUND_LOCK:
             _BACKGROUND_PROCESSES.clear()
@@ -492,3 +496,231 @@ class BrowserToolTests(IsolatedAsyncioTestCase):
         is_valid, error = self.tool.validate_params({"action": "fly"})
         self.assertFalse(is_valid)
         self.assertIn("must be one of", error.lower())
+
+
+# ---------------------------------------------------------------------------
+# _run_gh_command (shared helper)
+# ---------------------------------------------------------------------------
+
+
+class RunGhCommandTests(IsolatedAsyncioTestCase):
+    async def test_gh_not_found_returns_error(self) -> None:
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError("gh")):
+            result = await _run_gh_command(["gh", "issue", "view", "url"], "token")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("'gh' CLI not found", result.error)
+
+    async def test_nonzero_exit_returns_error(self) -> None:
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = (b"", b"Not Found")
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await _run_gh_command(["gh", "issue", "view", "url"], "token")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("gh exited with code 1", result.error)
+
+    async def test_success_returns_output(self) -> None:
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (b"Issue title\n", b"")
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await _run_gh_command(["gh", "issue", "view", "url"], "token")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        self.assertIn("Issue title", result.output)
+
+    async def test_timeout_returns_error(self) -> None:
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.side_effect = TimeoutError()
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await _run_gh_command(["gh", "issue", "view", "url"], "token")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("timed out", result.error.lower())
+
+
+# ---------------------------------------------------------------------------
+# GitHubIssueTool
+# ---------------------------------------------------------------------------
+
+
+class GitHubIssueToolTests(IsolatedAsyncioTestCase):
+    ISSUE_URL = "https://github.com/owner/repo/issues/1"
+    TOKEN = "ghp_test_token"
+
+    def setUp(self) -> None:
+        self.tool = GitHubIssueTool(config={"GITHUB_TOKEN": self.TOKEN})
+
+    async def test_missing_token_returns_error(self) -> None:
+        tool = GitHubIssueTool()
+        result = await tool.execute(action="view", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("GITHUB_TOKEN", result.error)
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_view_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="title: Fix bug\n")
+        result = await self.tool.execute(action="view", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "issue", "view", self.ISSUE_URL], self.TOKEN)
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_comment_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="")
+        result = await self.tool.execute(action="comment", issue_url=self.ISSUE_URL, body="LGTM!")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "issue", "comment", self.ISSUE_URL, "--body", "LGTM!"], self.TOKEN)
+
+    async def test_comment_missing_body_returns_error(self) -> None:
+        result = await self.tool.execute(action="comment", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("body", result.error.lower())
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_add_label_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="")
+        result = await self.tool.execute(action="add_label", issue_url=self.ISSUE_URL, label="bug")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "issue", "edit", self.ISSUE_URL, "--add-label", "bug"], self.TOKEN)
+
+    async def test_add_label_missing_label_returns_error(self) -> None:
+        result = await self.tool.execute(action="add_label", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("label", result.error.lower())
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_remove_label_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="")
+        result = await self.tool.execute(action="remove_label", issue_url=self.ISSUE_URL, label="wontfix")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(
+            ["gh", "issue", "edit", self.ISSUE_URL, "--remove-label", "wontfix"], self.TOKEN
+        )
+
+    async def test_remove_label_missing_label_returns_error(self) -> None:
+        result = await self.tool.execute(action="remove_label", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("label", result.error.lower())
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_close_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="Closed issue #1")
+        result = await self.tool.execute(action="close", issue_url=self.ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "issue", "close", self.ISSUE_URL], self.TOKEN)
+
+    async def test_require_approval_is_true(self) -> None:
+        self.assertTrue(self.tool.require_approval)
+
+    async def test_validate_params_action_required(self) -> None:
+        is_valid, error = self.tool.validate_params({"issue_url": self.ISSUE_URL})
+        self.assertFalse(is_valid)
+        self.assertIn("action", error)
+
+
+# ---------------------------------------------------------------------------
+# GitHubPRTool
+# ---------------------------------------------------------------------------
+
+
+class GitHubPRToolTests(IsolatedAsyncioTestCase):
+    PR_URL = "https://github.com/owner/repo/pull/42"
+    TOKEN = "ghp_test_token"
+
+    def setUp(self) -> None:
+        self.tool = GitHubPRTool(config={"GITHUB_TOKEN": self.TOKEN})
+
+    async def test_missing_token_returns_error(self) -> None:
+        tool = GitHubPRTool()
+        result = await tool.execute(action="view", pr_url=self.PR_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("GITHUB_TOKEN", result.error)
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_view_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="title: My PR\n")
+        result = await self.tool.execute(action="view", pr_url=self.PR_URL)
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "pr", "view", self.PR_URL], self.TOKEN)
+
+    async def test_view_missing_pr_url_returns_error(self) -> None:
+        result = await self.tool.execute(action="view")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("pr_url", result.error.lower())
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_create_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="https://github.com/owner/repo/pull/99\n")
+        result = await self.tool.execute(
+            action="create",
+            title="Add feature",
+            body="Description",
+            base_branch="main",
+            head_branch="feature/foo",
+        )
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--title",
+                "Add feature",
+                "--body",
+                "Description",
+                "--base",
+                "main",
+                "--head",
+                "feature/foo",
+            ],
+            self.TOKEN,
+        )
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_create_action_with_repo(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="https://github.com/owner/repo/pull/99\n")
+        result = await self.tool.execute(
+            action="create",
+            title="Add feature",
+            base_branch="main",
+            head_branch="feature/foo",
+            repo="owner/repo",
+        )
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        called_cmd = mock_run.call_args[0][0]
+        self.assertIn("--repo", called_cmd)
+        self.assertIn("owner/repo", called_cmd)
+
+    async def test_create_missing_title_returns_error(self) -> None:
+        result = await self.tool.execute(action="create", base_branch="main", head_branch="feature/x")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("title", result.error.lower())
+
+    async def test_create_missing_base_branch_returns_error(self) -> None:
+        result = await self.tool.execute(action="create", title="PR", head_branch="feature/x")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("base_branch", result.error.lower())
+
+    async def test_create_missing_head_branch_returns_error(self) -> None:
+        result = await self.tool.execute(action="create", title="PR", base_branch="main")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("head_branch", result.error.lower())
+
+    @patch("agents.tools.coding._run_gh_command", new_callable=AsyncMock)
+    async def test_update_body_action(self, mock_run: AsyncMock) -> None:
+        mock_run.return_value = ToolResult.success(output="")
+        result = await self.tool.execute(action="update_body", pr_url=self.PR_URL, body="Updated body")
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        mock_run.assert_called_once_with(["gh", "pr", "edit", self.PR_URL, "--body", "Updated body"], self.TOKEN)
+
+    async def test_update_body_missing_pr_url_returns_error(self) -> None:
+        result = await self.tool.execute(action="update_body", body="text")
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("pr_url", result.error.lower())
+
+    async def test_require_approval_is_true(self) -> None:
+        self.assertTrue(self.tool.require_approval)
+
+    async def test_validate_params_action_required(self) -> None:
+        is_valid, error = self.tool.validate_params({})
+        self.assertFalse(is_valid)
+        self.assertIn("action", error)
