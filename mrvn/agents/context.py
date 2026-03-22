@@ -37,8 +37,7 @@ class ContextBundleService:
         except ClientError as exc:
             if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
                 return default
-            logger.warning("Failed to read s3://%s/%s: %s", bucket, key, exc)
-            return default
+            raise
 
     def pull(self, s3_prefix: str) -> CustomerContextBundle:
         """Read all context files from S3 and return a CustomerContextBundle.
@@ -111,6 +110,8 @@ class ContextBundleService:
 
         s3 = boto3.client("s3")
         existing = self._read_object(s3, bucket, memory_key, default="")
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
         new_content = f"{existing}{entry.content}" if existing else entry.content
 
         s3.put_object(

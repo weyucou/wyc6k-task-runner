@@ -190,3 +190,31 @@ class ContextBundleRoundTripTest(unittest.TestCase):
         self.assertEqual(bundle2.daily_memories[0].content, "Day 1 notes.")
         self.assertEqual(bundle2.claude_md, "# Instructions")
         self.assertEqual(bundle2.project_goals, "# Goals")
+
+
+class PushMemoryNewlineTests(unittest.TestCase):
+    """push_memory ensures newline separator between existing and new content."""
+
+    @mock_aws
+    def test_newline_added_when_missing(self) -> None:
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="bucket")
+        s3.put_object(Bucket="bucket", Key="cust/projects/repo/memory/2026/2026-03-22.md", Body=b"old content (no trailing newline)")
+        svc = ContextBundleService()
+        entry = MemoryEntry(date=datetime.date(2026, 3, 22), filename="2026-03-22.md", content="## New Entry\n")
+        svc.push_memory("s3://bucket/cust/projects/repo/", entry)
+        body = s3.get_object(Bucket="bucket", Key="cust/projects/repo/memory/2026/2026-03-22.md")["Body"].read().decode()
+        assert body == "old content (no trailing newline)\n## New Entry\n"
+
+
+class ReadObjectRaisesOnUnexpectedErrorTests(unittest.TestCase):
+    """_read_object re-raises non-404 ClientError exceptions."""
+
+    @mock_aws
+    def test_reraises_non_404_error(self) -> None:
+        from botocore.exceptions import ClientError
+        svc = ContextBundleService()
+        s3 = boto3.client("s3", region_name="us-east-1")
+        # Bucket does not exist — moto raises NoSuchBucket (non-404 variant)
+        with self.assertRaises(ClientError):
+            svc._read_object(s3, "nonexistent-bucket-xyz", "any/key")
