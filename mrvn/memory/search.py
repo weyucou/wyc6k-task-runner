@@ -220,10 +220,13 @@ class MemorySearchService:
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
             customer_id: Optional customer ID to scope results to a tenant.
+                Falls back to self.config.customer_id when not provided.
 
         Returns:
             List of search results.
         """
+        if customer_id is None:
+            customer_id = self.config.customer_id
         results: list[MemorySearchResult] = []
         query_lower = query.lower()
         words = query_lower.split()
@@ -324,10 +327,13 @@ class MemorySearchService:
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
             customer_id: Optional customer ID to scope results to a tenant.
+                Falls back to self.config.customer_id when not provided.
 
         Returns:
             List of search results sorted by similarity.
         """
+        if customer_id is None:
+            customer_id = self.config.customer_id
         from django.db import connection  # noqa: PLC0415
         from pgvector.django import CosineDistance  # noqa: PLC0415
 

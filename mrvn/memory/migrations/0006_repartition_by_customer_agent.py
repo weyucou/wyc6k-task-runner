@@ -1,8 +1,10 @@
-# Destructive migration: repartition EmbeddingChunk by (customer_id, agent_id).
+# Repartition EmbeddingChunk by (customer_id, agent_id).
 #
 # Drops the old agent_id-only LIST-partitioned table and recreates it with a
-# composite (customer_id, agent_id) partition key.  Existing rows are lost;
-# operators must re-index after applying this migration.
+# composite (customer_id, agent_id) partition key.
+#
+# Existing rows (null customer_id → sentinel UUID) are preserved by copying them
+# into the new DEFAULT partition before the old table is dropped.
 #
 # Sentinel partition: rows whose customer_id is the nil UUID
 # (00000000-0000-0000-0000-000000000000) fall into the DEFAULT partition.
@@ -29,12 +31,36 @@ class Migration(migrations.Migration):
                 help_text="Customer ID for tenant isolation (denormalized)",
             ),
         ),
-        # 2. Drop the old partitioned table (and all its partitions / indexes).
+        # 2. Preserve existing rows in a temp table before the destructive drop.
+        #    Rows without customer_id are assigned the sentinel nil UUID so they
+        #    land in the DEFAULT partition after the table is recreated.
+        migrations.RunSQL(
+            sql="""
+            CREATE TEMP TABLE _embeddingchunk_backup AS
+            SELECT
+                id,
+                '00000000-0000-0000-0000-000000000000'::uuid AS customer_id,
+                agent_id,
+                source,
+                source_id,
+                text,
+                COALESCE(start_line, 0) AS start_line,
+                COALESCE(end_line, 0) AS end_line,
+                embedding,
+                embedding_model,
+                content_hash,
+                created_at,
+                updated_at
+            FROM memory_embeddingchunk;
+            """,
+            reverse_sql="DROP TABLE IF EXISTS _embeddingchunk_backup;",
+        ),
+        # 3. Drop the old partitioned table (and all its partitions / indexes).
         migrations.RunSQL(
             sql="DROP TABLE IF EXISTS memory_embeddingchunk CASCADE;",
-            reverse_sql="",  # Recreated by the next statement on reverse
+            reverse_sql="",  # Table is recreated by the next operation on rollback
         ),
-        # 3. Recreate with composite (customer_id, agent_id) partition key.
+        # 4. Recreate with composite (customer_id, agent_id) partition key.
         migrations.RunSQL(
             sql="""
             CREATE TABLE memory_embeddingchunk (
@@ -56,7 +82,7 @@ class Migration(migrations.Migration):
             """,
             reverse_sql="DROP TABLE IF EXISTS memory_embeddingchunk CASCADE;",
         ),
-        # 4. Default partition — catches sentinel UUID and any unpartitioned rows.
+        # 5. Default partition — catches sentinel UUID and any unpartitioned rows.
         migrations.RunSQL(
             sql="""
             CREATE TABLE memory_embeddingchunk_default
@@ -64,7 +90,22 @@ class Migration(migrations.Migration):
             """,
             reverse_sql="DROP TABLE IF EXISTS memory_embeddingchunk_default;",
         ),
-        # 5. Recreate indexes.
+        # 6. Restore preserved rows into the new DEFAULT (sentinel) partition.
+        migrations.RunSQL(
+            sql="""
+            INSERT INTO memory_embeddingchunk
+                (id, customer_id, agent_id, source, source_id, text,
+                 start_line, end_line, embedding, embedding_model,
+                 content_hash, created_at, updated_at)
+            SELECT
+                id, customer_id, agent_id, source, source_id, text,
+                start_line, end_line, embedding, embedding_model,
+                content_hash, created_at, updated_at
+            FROM _embeddingchunk_backup;
+            """,
+            reverse_sql="",  # Data preservation only; no meaningful reverse
+        ),
+        # 7. Recreate indexes.
         migrations.RunSQL(
             sql="""
             CREATE INDEX memory_embeddingchunk_customer_agent_idx
@@ -93,7 +134,7 @@ class Migration(migrations.Migration):
             """,
             reverse_sql="DROP INDEX IF EXISTS memory_embe_agent_hash_idx;",
         ),
-        # 6. HNSW index (m=24, ef_construction=128) for fast ANN search.
+        # 8. HNSW index (m=24, ef_construction=128) for fast ANN search.
         migrations.RunSQL(
             sql="""
             CREATE INDEX embedding_chunk_hnsw_idx
