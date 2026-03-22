@@ -1,14 +1,16 @@
 """Tests for coding tools: read, write, edit, apply_patch, exec, process,
 web_fetch, web_search, sessions_spawn, sessions_send, image, browser."""
 
+import asyncio
 import os
 import tempfile
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from agents.tools.base import ToolStatus
 from agents.tools.coding import (
     ApplyPatchTool,
+    AskccRunTool,
     BrowserTool,
     EditTool,
     ExecTool,
@@ -490,5 +492,94 @@ class BrowserToolTests(IsolatedAsyncioTestCase):
 
     async def test_validate_params_invalid_action_enum(self) -> None:
         is_valid, error = self.tool.validate_params({"action": "fly"})
+        self.assertFalse(is_valid)
+        self.assertIn("must be one of", error.lower())
+
+
+# ---------------------------------------------------------------------------
+# AskccRunTool
+# ---------------------------------------------------------------------------
+
+_ISSUE_URL = "https://github.com/org/repo/issues/1"
+
+
+class AskccRunToolTests(IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.tool = AskccRunTool()
+
+    async def test_askcc_not_found_returns_error(self) -> None:
+        with patch("agents.tools.coding.asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+            result = await self.tool.execute(action="develop", issue_url=_ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("askcc", result.error.lower())
+
+    async def test_success_returns_output(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        mock_proc.returncode = 0
+        with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await self.tool.execute(action="develop", issue_url=_ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.SUCCESS)
+        self.assertIn("done", result.output)
+        self.assertEqual(result.data["action"], "develop")
+        self.assertEqual(result.data["issue_url"], _ISSUE_URL)
+
+    async def test_nonzero_exit_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"partial output", b"error detail"))
+        mock_proc.returncode = 1
+        with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await self.tool.execute(action="develop", issue_url=_ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("1", result.error)
+        self.assertIn("partial output", result.output)
+
+    async def test_cli_args_ordering(self) -> None:
+        """Verify correct arg ordering: askcc {action} {issue_url} {extra_args}."""
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        mock_proc.returncode = 0
+        with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            await self.tool.execute(action="review", issue_url=_ISSUE_URL, extra_args=["--flag"])
+        mock_exec.assert_called_once_with(
+            "askcc", "review", _ISSUE_URL, "--flag",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+    async def test_each_action_passes_correct_verb(self) -> None:
+        for action in ("prepare", "develop", "review", "diagnose", "explore", "plan"):
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+            mock_proc.returncode = 0
+            with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+                await self.tool.execute(action=action, issue_url=_ISSUE_URL)
+            args = mock_exec.call_args[0]
+            self.assertEqual(args[0], "askcc")
+            self.assertEqual(args[1], action)
+            self.assertEqual(args[2], _ISSUE_URL)
+
+    async def test_timeout_configurable_via_config(self) -> None:
+        tool = AskccRunTool(config={"timeout": 1})
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+        with patch("agents.tools.coding.asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = await tool.execute(action="develop", issue_url=_ISSUE_URL)
+        self.assertEqual(result.status, ToolStatus.ERROR)
+        self.assertIn("timed out", result.error.lower())
+        self.assertIn("1", result.error)
+
+    async def test_validate_params_requires_action(self) -> None:
+        is_valid, error = self.tool.validate_params({"issue_url": _ISSUE_URL})
+        self.assertFalse(is_valid)
+        self.assertIn("action", error)
+
+    async def test_validate_params_requires_issue_url(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "develop"})
+        self.assertFalse(is_valid)
+        self.assertIn("issue_url", error)
+
+    async def test_validate_params_invalid_action_enum(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "fly", "issue_url": _ISSUE_URL})
         self.assertFalse(is_valid)
         self.assertIn("must be one of", error.lower())

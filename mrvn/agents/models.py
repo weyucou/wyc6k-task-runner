@@ -154,6 +154,7 @@ class Agent(TimestampedModel):
                 "memory_store",
                 "memory_retrieve",
                 "memory_search",
+                "askcc_run",
             }
             return [t for t in available_tools if t in coding_tools]
         if self.tool_profile == ToolProfile.MESSAGING.value:

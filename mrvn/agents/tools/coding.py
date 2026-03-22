@@ -914,6 +914,71 @@ class BrowserTool(BaseTool):
             return ToolResult.from_error(f"Browser error: {exc}")
 
 
+class AskccRunTool(BaseTool):
+    """Invoke the askcc CLI to delegate issue processing to a Claude Code sub-agent."""
+
+    name = "askcc_run"
+    description = (
+        "Invoke the askcc CLI to process a GitHub issue (prepare, develop, review, diagnose, explore, plan). "
+        "Streams stdout as output; non-zero exit surfaces as an error. "
+        "Timeout defaults to 10800s (3h) and is configurable via the tool config JSON field."
+    )
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action to perform.",
+            required=True,
+            enum=["prepare", "develop", "review", "diagnose", "explore", "plan"],
+        ),
+        ToolParameter(
+            name="issue_url",
+            type="string",
+            description="GitHub issue URL to process.",
+            required=True,
+        ),
+        ToolParameter(
+            name="extra_args",
+            type="array",
+            description="Additional CLI arguments to pass to askcc.",
+            required=False,
+            default=[],
+        ),
+    ]
+
+    async def execute(self, action: str, issue_url: str, extra_args: list[str] | None = None) -> ToolResult:
+        """Run askcc CLI."""
+        timeout = self.config.get("timeout", 10800)
+        cmd = ["askcc", action, issue_url] + (extra_args or [])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            out = stdout.decode(errors="replace")
+            err = stderr.decode(errors="replace")
+            if proc.returncode == 0:
+                return ToolResult.success(
+                    output=out,
+                    data={"return_code": proc.returncode, "action": action, "issue_url": issue_url},
+                )
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                output=out,
+                error=f"askcc exited with code {proc.returncode}: {err}",
+                data={"return_code": proc.returncode, "action": action, "issue_url": issue_url},
+            )
+        except asyncio.TimeoutError:
+            return ToolResult.from_error(f"askcc timed out after {timeout}s.")
+        except FileNotFoundError:
+            return ToolResult.from_error("'askcc' CLI not found. Ensure it is installed and on PATH.")
+        except OSError as exc:
+            return ToolResult.from_error(f"Error running askcc: {exc}")
+
+
 def register_coding_tools(registry: Any) -> None:
     """Register all coding tools with the given registry.
 
@@ -933,6 +998,7 @@ def register_coding_tools(registry: Any) -> None:
         SessionsSendTool(),
         ImageTool(),
         BrowserTool(),
+        AskccRunTool(),
     ]
     for tool in tools:
         try:
