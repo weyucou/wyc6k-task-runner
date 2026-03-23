@@ -87,6 +87,7 @@ INSTALLED_APPS = [
     "channels",
     "memory",
     "autoreply",
+    "tasks",
 ]
 
 # Django REST Framework settings
@@ -262,11 +263,18 @@ LOGGING = {
             "level": DJANGO_LOG_LEVEL,
             "propagate": True,
         },
+        "tasks": {
+            "handlers": ["console"],
+            "level": DJANGO_LOG_LEVEL,
+            "propagate": True,
+        },
     },
 }
 
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
 AWS_DEFAULT_REGION = AWS_REGION
+
+TASK_QUEUE_URL = os.getenv("TASK_QUEUE_URL", "")
 
 # CSRF Settings
 # https://docs.djangoproject.com/en/2.2/ref/settings/#std:setting-CSRF_COOKIE_HTTPONLY
