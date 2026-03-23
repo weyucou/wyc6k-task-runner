@@ -1,25 +1,64 @@
-"""Tests for CustomerContextBundle and ContextBundleService."""
+"""Tests for CustomerContextBundle and ContextBundleService — uses LocalStack S3."""
 
 import datetime
+import os
 import unittest
-from typing import Any
+from typing import Any, ClassVar
 
 import boto3
-from moto import mock_aws
+from botocore.exceptions import ClientError
 
 from agents.context import ContextBundleService, CustomerContextBundle, MemoryEntry
 
-BUCKET = "weyucou-agent-contexts"
+LOCALSTACK_ENDPOINT = "http://localhost:4566"
+BUCKET = "weyucou-agent-contexts-test"
 CUSTOMER_PREFIX = "customers/cust-001"
 REPO_NAME = "my-repo"
 PROJECT_PREFIX = f"s3://{BUCKET}/{CUSTOMER_PREFIX}/projects/{REPO_NAME}"
 
+_AWS_ENV = {
+    "AWS_ACCESS_KEY_ID": "test",
+    "AWS_SECRET_ACCESS_KEY": "test",
+    "AWS_DEFAULT_REGION": "us-east-1",
+    "AWS_ENDPOINT_URL": LOCALSTACK_ENDPOINT,
+}
 
-def _setup_bucket(s3: Any) -> None:
-    s3.create_bucket(Bucket=BUCKET)
+
+def _s3_client() -> Any:
+    return boto3.client(
+        "s3",
+        endpoint_url=LOCALSTACK_ENDPOINT,
+        aws_access_key_id="test",
+        aws_secret_access_key="test",  # noqa: S106
+        region_name="us-east-1",
+    )
 
 
-@mock_aws
+def _clear_bucket(s3: Any, bucket: str) -> None:
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket):
+        for obj in page.get("Contents", []):
+            s3.delete_object(Bucket=bucket, Key=obj["Key"])
+
+
+class BaseLocalStackTest(unittest.TestCase):
+    s3: ClassVar[Any]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        os.environ.update(_AWS_ENV)
+        cls.s3 = _s3_client()
+        cls.s3.create_bucket(Bucket=BUCKET)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _clear_bucket(cls.s3, BUCKET)
+        cls.s3.delete_bucket(Bucket=BUCKET)
+
+    def setUp(self) -> None:
+        _clear_bucket(self.s3, BUCKET)
+
+
 class CustomerContextBundleModelTest(unittest.TestCase):
     def test_memory_entry_defaults(self) -> None:
         entry = MemoryEntry(
@@ -42,12 +81,7 @@ class CustomerContextBundleModelTest(unittest.TestCase):
         self.assertEqual(bundle.sops["overview.md"], "Safety first")
 
 
-@mock_aws
-class ContextBundleServicePullTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.s3 = boto3.client("s3", region_name="us-east-1")
-        _setup_bucket(self.s3)
-
+class ContextBundleServicePullTest(BaseLocalStackTest):
     def _put(self, key: str, content: str) -> None:
         self.s3.put_object(Bucket=BUCKET, Key=key, Body=content.encode("utf-8"))
 
@@ -114,12 +148,7 @@ class ContextBundleServicePullTest(unittest.TestCase):
         self.assertEqual(len(bundle.daily_memories), 3)
 
 
-@mock_aws
-class ContextBundleServicePushTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.s3 = boto3.client("s3", region_name="us-east-1")
-        _setup_bucket(self.s3)
-
+class ContextBundleServicePushTest(BaseLocalStackTest):
     def _get(self, key: str) -> str:
         return self.s3.get_object(Bucket=BUCKET, Key=key)["Body"].read().decode("utf-8")
 
@@ -156,12 +185,7 @@ class ContextBundleServicePushTest(unittest.TestCase):
         self.assertEqual(content, "End of year.")
 
 
-@mock_aws
-class ContextBundleRoundTripTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.s3 = boto3.client("s3", region_name="us-east-1")
-        _setup_bucket(self.s3)
-
+class ContextBundleRoundTripTest(BaseLocalStackTest):
     def _put(self, key: str, content: str) -> None:
         self.s3.put_object(Bucket=BUCKET, Key=key, Body=content.encode("utf-8"))
 
@@ -192,29 +216,27 @@ class ContextBundleRoundTripTest(unittest.TestCase):
         self.assertEqual(bundle2.project_goals, "# Goals")
 
 
-class PushMemoryNewlineTests(unittest.TestCase):
+class PushMemoryNewlineTests(BaseLocalStackTest):
     """push_memory ensures newline separator between existing and new content."""
 
-    @mock_aws
     def test_newline_added_when_missing(self) -> None:
-        s3 = boto3.client("s3", region_name="us-east-1")
-        s3.create_bucket(Bucket="bucket")
-        s3.put_object(Bucket="bucket", Key="cust/projects/repo/memory/2026/2026-03-22.md", Body=b"old content (no trailing newline)")
-        svc = ContextBundleService()
+        key = f"{CUSTOMER_PREFIX}/projects/{REPO_NAME}/memory/2026/2026-03-22.md"
+        self.s3.put_object(Bucket=BUCKET, Key=key, Body=b"old content (no trailing newline)")
         entry = MemoryEntry(date=datetime.date(2026, 3, 22), filename="2026-03-22.md", content="## New Entry\n")
-        svc.push_memory("s3://bucket/cust/projects/repo/", entry)
-        body = s3.get_object(Bucket="bucket", Key="cust/projects/repo/memory/2026/2026-03-22.md")["Body"].read().decode()
-        assert body == "old content (no trailing newline)\n## New Entry\n"
+        ContextBundleService().push_memory(PROJECT_PREFIX, entry)
+        body = self.s3.get_object(Bucket=BUCKET, Key=key)["Body"].read().decode()
+        self.assertEqual(body, "old content (no trailing newline)\n## New Entry\n")
 
 
 class ReadObjectRaisesOnUnexpectedErrorTests(unittest.TestCase):
     """_read_object re-raises non-404 ClientError exceptions."""
 
-    @mock_aws
+    def setUp(self) -> None:
+        os.environ.update(_AWS_ENV)
+
     def test_reraises_non_404_error(self) -> None:
-        from botocore.exceptions import ClientError
         svc = ContextBundleService()
-        s3 = boto3.client("s3", region_name="us-east-1")
-        # Bucket does not exist — moto raises NoSuchBucket (non-404 variant)
+        s3 = _s3_client()
+        # Bucket does not exist in LocalStack — raises NoSuchBucket (non-404 error code)
         with self.assertRaises(ClientError):
-            svc._read_object(s3, "nonexistent-bucket-xyz", "any/key")
+            svc._read_object(s3, "nonexistent-bucket-xyz-does-not-exist", "any/key")
