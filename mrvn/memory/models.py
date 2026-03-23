@@ -8,6 +8,9 @@ from pgvector.django import HnswIndex, VectorField
 from psqlextra.models import PostgresPartitionedModel
 from psqlextra.types import PostgresPartitioningMethod
 
+# Placeholder UUID for EmbeddingChunk rows where no customer is assigned yet
+# (used until Agent gains a customer_id FK in issue #2). Rows with this value
+# land in the DEFAULT partition so they remain queryable without a real customer scope.
 SENTINEL_CUSTOMER_ID = UUID("00000000-0000-0000-0000-000000000000")
 
 logger = logging.getLogger(__name__)

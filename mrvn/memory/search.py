@@ -44,8 +44,6 @@ class MemorySearchConfig(BaseModel):
     # HNSW ef_search: higher = better recall, slightly slower (default=40)
     # Recommended: 100-200 for production RAG systems
     ef_search: int = 100
-    # TODO: make required once Agent gains customer_id FK (issue #2)
-    customer_id: UUID | None = None
 
     model_config = {"frozen": False}
 
@@ -209,7 +207,7 @@ class MemorySearchService:
     def text_search(
         self,
         query: str,
-        session: "Session | None" = None,
+        session: Session | None = None,
         agent_id: int | None = None,
         customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
@@ -220,13 +218,10 @@ class MemorySearchService:
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
             customer_id: Optional customer ID to scope results to a tenant.
-                Falls back to self.config.customer_id when not provided.
 
         Returns:
             List of search results.
         """
-        if customer_id is None:
-            customer_id = self.config.customer_id
         results: list[MemorySearchResult] = []
         query_lower = query.lower()
         words = query_lower.split()
@@ -316,7 +311,7 @@ class MemorySearchService:
     def vector_search(
         self,
         query: str,
-        session: "Session | None" = None,
+        session: Session | None = None,
         agent_id: int | None = None,
         customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
@@ -327,13 +322,10 @@ class MemorySearchService:
             session: Optional session to limit search.
             agent_id: Optional agent ID to limit search.
             customer_id: Optional customer ID to scope results to a tenant.
-                Falls back to self.config.customer_id when not provided.
 
         Returns:
             List of search results sorted by similarity.
         """
-        if customer_id is None:
-            customer_id = self.config.customer_id
         from django.db import connection  # noqa: PLC0415
         from pgvector.django import CosineDistance  # noqa: PLC0415
 
@@ -384,7 +376,7 @@ class MemorySearchService:
     def hybrid_search(
         self,
         query: str,
-        session: "Session | None" = None,
+        session: Session | None = None,
         agent_id: int | None = None,
         customer_id: UUID | None = None,
     ) -> list[MemorySearchResult]:
@@ -433,7 +425,7 @@ class MemorySearchService:
     def search(
         self,
         query: str,
-        session: "Session | None" = None,
+        session: Session | None = None,
         agent_id: int | None = None,
         customer_id: UUID | None = None,
         search_type: str = "hybrid",

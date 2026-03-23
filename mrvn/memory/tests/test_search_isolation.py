@@ -76,33 +76,3 @@ class TextSearchCustomerIsolationTests(SimpleTestCase):
         self.assertNotEqual(ids_a, ids_b)
 
 
-class TextSearchConfigCustomerIdFallbackTests(SimpleTestCase):
-    """Verify text_search falls back to config.customer_id when no parameter given."""
-
-    @patch("memory.search.EmbeddingChunk.objects")
-    @patch("memory.search.Message.objects")
-    @patch("memory.search.ConversationSummary.objects")
-    def test_config_customer_id_used_when_no_param(
-        self, mock_summary_mgr, mock_msg_mgr, mock_chunk_mgr
-    ) -> None:
-        """config.customer_id is the default when customer_id param is None."""
-        from memory.search import MemorySearchConfig, MemorySearchService
-        mock_qs = MagicMock()
-        mock_qs.values_list.return_value = []
-        mock_chunk_mgr.filter.return_value = mock_qs
-        mock_msg_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
-        mock_summary_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
-
-        config = MemorySearchConfig(embedding_model="mock-model", customer_id=CUSTOMER_A_ID)
-        svc = MemorySearchService(config=config)
-
-        # Call without explicit customer_id
-        svc.text_search("anything")
-
-        calls = mock_chunk_mgr.filter.call_args_list
-        customer_ids_used = [c.kwargs.get("customer_id") for c in calls]
-        self.assertIn(
-            CUSTOMER_A_ID,
-            customer_ids_used,
-            "text_search should fall back to config.customer_id when no param given",
-        )
