@@ -2,6 +2,10 @@
 
 A Django-based AI assistant platform with multi-channel messaging support (Telegram, Slack) and multiple LLM backends (Anthropic Claude, Google Gemini, Ollama, vLLM).
 
+## System Architecture
+
+marvin-manager is the agent runtime of the **WYC6k** multi-tenant agent harness. See [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec) for the full system architecture, and [ARCHITECTURE.md](ARCHITECTURE.md) for marvin-manager internals.
+
 ## Quick Start
 
 ```bash
