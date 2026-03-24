@@ -4,9 +4,10 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
-import boto3
 from botocore.exceptions import ClientError
 from pydantic import BaseModel
+
+from commons.functions import get_s3_client
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class ContextBundleService:
         customer_prefix = parts[0]
         customer_id = customer_prefix.split("/")[-1]
 
-        s3 = boto3.client("s3")
+        s3 = get_s3_client()
         paginator = s3.get_paginator("list_objects_v2")
 
         claude_md = self._read_object(s3, bucket, f"{customer_prefix}/CLAUDE.md")
@@ -108,7 +109,7 @@ class ContextBundleService:
 
         memory_key = f"{prefix}/memory/{entry.date.year}/{entry.filename}"
 
-        s3 = boto3.client("s3")
+        s3 = get_s3_client()
         existing = self._read_object(s3, bucket, memory_key, default="")
         if existing and not existing.endswith("\n"):
             existing += "\n"

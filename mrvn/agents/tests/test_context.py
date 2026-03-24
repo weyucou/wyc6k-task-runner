@@ -5,13 +5,12 @@ import os
 import unittest
 from typing import Any, ClassVar
 
-import boto3
 from botocore.exceptions import ClientError
 
 from agents.context import ContextBundleService, CustomerContextBundle, MemoryEntry
+from commons.functions import get_s3_client
 
-LOCALSTACK_ENDPOINT = "http://localhost:4566"
-BUCKET = "weyucou-agent-contexts-test"
+BUCKET = "wyc6k-agent-contexts-test"
 CUSTOMER_PREFIX = "customers/cust-001"
 REPO_NAME = "my-repo"
 PROJECT_PREFIX = f"s3://{BUCKET}/{CUSTOMER_PREFIX}/projects/{REPO_NAME}"
@@ -20,18 +19,8 @@ _AWS_ENV = {
     "AWS_ACCESS_KEY_ID": "test",
     "AWS_SECRET_ACCESS_KEY": "test",
     "AWS_DEFAULT_REGION": "us-east-1",
-    "AWS_ENDPOINT_URL": LOCALSTACK_ENDPOINT,
+    "AWS_ENDPOINT_URL": "http://localhost:4566",
 }
-
-
-def _s3_client() -> Any:
-    return boto3.client(
-        "s3",
-        endpoint_url=LOCALSTACK_ENDPOINT,
-        aws_access_key_id="test",
-        aws_secret_access_key="test",  # noqa: S106
-        region_name="us-east-1",
-    )
 
 
 def _clear_bucket(s3: Any, bucket: str) -> None:
@@ -47,7 +36,7 @@ class BaseLocalStackTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         os.environ.update(_AWS_ENV)
-        cls.s3 = _s3_client()
+        cls.s3 = get_s3_client()
         cls.s3.create_bucket(Bucket=BUCKET)
 
     @classmethod
@@ -231,12 +220,12 @@ class PushMemoryNewlineTests(BaseLocalStackTest):
 class ReadObjectRaisesOnUnexpectedErrorTests(unittest.TestCase):
     """_read_object re-raises non-404 ClientError exceptions."""
 
-    def setUp(self) -> None:
+    def setUpClass(cls) -> None:
         os.environ.update(_AWS_ENV)
 
     def test_reraises_non_404_error(self) -> None:
         svc = ContextBundleService()
-        s3 = _s3_client()
+        s3 = get_s3_client()
         # Bucket does not exist in LocalStack — raises NoSuchBucket (non-404 error code)
         with self.assertRaises(ClientError):
             svc._read_object(s3, "nonexistent-bucket-xyz-does-not-exist", "any/key")
