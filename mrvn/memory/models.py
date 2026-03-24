@@ -178,10 +178,10 @@ class SessionEmbeddingChunk(PostgresPartitionedModel):
         help_text="Customer ID for tenant isolation (partition key)",
     )
 
-    agent = models.ForeignKey(
-        "agents.Agent",
+    session = models.ForeignKey(
+        Session,
         on_delete=models.CASCADE,
-        related_name="session_embedding_chunks",
+        related_name="embedding_chunks",
     )
 
     # Source reference (message, summary, or file)
@@ -233,8 +233,8 @@ class SessionEmbeddingChunk(PostgresPartitionedModel):
                 ef_construction=128,
                 opclasses=["vector_cosine_ops"],
             ),
-            models.Index(fields=["agent", "source", "source_id"]),
-            models.Index(fields=["agent", "content_hash"]),
+            models.Index(fields=["session", "source", "source_id"]),
+            models.Index(fields=["session", "content_hash"]),
         ]
 
     def __str__(self) -> str:

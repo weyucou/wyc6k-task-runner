@@ -6,8 +6,12 @@
 #   EmbeddingChunk      → SessionEmbeddingChunk
 #
 # Partition change:
-#   Old: LIST partitioned by agent_id only
-#   New: LIST partitioned by customer_id only
+#   Old: LIST partitioned by agent_id
+#   New: LIST partitioned by customer_id
+#
+# Design:
+#   customer_id is the tenant partition key.
+#   agent is accessed via session (session_id FK replaces agent_id FK).
 #
 # SessionEmbeddingChunk is dropped and recreated (destructive) because
 # psqlextra does not support ALTER TABLE ... SET PARTITION KEY.
@@ -19,7 +23,6 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("agents", "0007_project_context"),
         ("memory", "0005_session_project_context_customer"),
     ]
 
@@ -37,21 +40,64 @@ class Migration(migrations.Migration):
             name="sessionsummary",
             options={"ordering": ["-created_datetime"], "verbose_name_plural": "Session Summaries"},
         ),
-        # 2. Rename EmbeddingChunk → SessionEmbeddingChunk and repartition by customer_id.
-        #    SeparateDatabaseAndState: Django state sees the rename + new field;
+        # 2. Rename EmbeddingChunk → SessionEmbeddingChunk, repartition by customer_id,
+        #    and replace agent_id FK with session_id FK.
+        #    SeparateDatabaseAndState: Django state sees the final model shape;
         #    the database drops the old table and creates the new one via RunSQL.
         migrations.SeparateDatabaseAndState(
             state_operations=[
-                migrations.RenameModel(
-                    old_name="EmbeddingChunk",
-                    new_name="SessionEmbeddingChunk",
-                ),
-                migrations.AddField(
-                    model_name="sessionembeddingchunk",
-                    name="customer_id",
-                    field=models.UUIDField(
-                        help_text="Customer ID for tenant isolation (partition key)",
-                    ),
+                migrations.DeleteModel("EmbeddingChunk"),
+                migrations.CreateModel(
+                    name="SessionEmbeddingChunk",
+                    fields=[
+                        ("id", models.BigAutoField(primary_key=True, serialize=False)),
+                        (
+                            "customer_id",
+                            models.UUIDField(help_text="Customer ID for tenant isolation (partition key)"),
+                        ),
+                        (
+                            "session",
+                            models.ForeignKey(
+                                on_delete=models.deletion.CASCADE,
+                                related_name="embedding_chunks",
+                                to="memory.session",
+                            ),
+                        ),
+                        (
+                            "source",
+                            models.CharField(
+                                choices=[("message", "Message"), ("summary", "Summary"), ("file", "File")],
+                                default="message",
+                                max_length=20,
+                            ),
+                        ),
+                        ("source_id", models.BigIntegerField(help_text="ID of the source message, summary, or file")),
+                        ("text", models.TextField()),
+                        ("start_line", models.IntegerField(default=0)),
+                        ("end_line", models.IntegerField(default=0)),
+                        (
+                            "embedding",
+                            models.Field(),  # VectorField — handled by psqlextra/pgvector
+                        ),
+                        (
+                            "embedding_model",
+                            models.CharField(
+                                default="all-MiniLM-L6-v2",
+                                help_text="Model used to generate embedding",
+                                max_length=100,
+                            ),
+                        ),
+                        (
+                            "content_hash",
+                            models.CharField(
+                                db_index=True,
+                                help_text="SHA256 hash for deduplication",
+                                max_length=64,
+                            ),
+                        ),
+                        ("created_at", models.DateTimeField(auto_now_add=True)),
+                        ("updated_at", models.DateTimeField(auto_now=True)),
+                    ],
                 ),
             ],
             database_operations=[
@@ -60,13 +106,14 @@ class Migration(migrations.Migration):
                     sql="DROP TABLE IF EXISTS memory_embeddingchunk CASCADE;",
                     reverse_sql="",
                 ),
-                # Recreate as memory_sessionembeddingchunk, partitioned by customer_id.
+                # Recreate as memory_sessionembeddingchunk partitioned by customer_id,
+                # with session_id FK replacing agent_id.
                 migrations.RunSQL(
                     sql="""
                     CREATE TABLE memory_sessionembeddingchunk (
                         id BIGSERIAL,
                         customer_id UUID NOT NULL,
-                        agent_id BIGINT NOT NULL REFERENCES agents_agent(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
+                        session_id BIGINT NOT NULL REFERENCES memory_session(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
                         source VARCHAR(20) NOT NULL DEFAULT 'message',
                         source_id BIGINT NOT NULL,
                         text TEXT NOT NULL,
@@ -92,12 +139,12 @@ class Migration(migrations.Migration):
                     reverse_sql="DROP INDEX IF EXISTS memory_sessionembeddingchunk_content_hash_idx;",
                 ),
                 migrations.RunSQL(
-                    sql="CREATE INDEX memory_sessionembeddingchunk_agent_source_idx ON memory_sessionembeddingchunk (agent_id, source, source_id);",
-                    reverse_sql="DROP INDEX IF EXISTS memory_sessionembeddingchunk_agent_source_idx;",
+                    sql="CREATE INDEX memory_sessionembeddingchunk_session_source_idx ON memory_sessionembeddingchunk (session_id, source, source_id);",
+                    reverse_sql="DROP INDEX IF EXISTS memory_sessionembeddingchunk_session_source_idx;",
                 ),
                 migrations.RunSQL(
-                    sql="CREATE INDEX memory_sessionembeddingchunk_agent_hash_idx ON memory_sessionembeddingchunk (agent_id, content_hash);",
-                    reverse_sql="DROP INDEX IF EXISTS memory_sessionembeddingchunk_agent_hash_idx;",
+                    sql="CREATE INDEX memory_sessionembeddingchunk_session_hash_idx ON memory_sessionembeddingchunk (session_id, content_hash);",
+                    reverse_sql="DROP INDEX IF EXISTS memory_sessionembeddingchunk_session_hash_idx;",
                 ),
                 # HNSW index (m=24, ef_construction=128) for fast ANN search.
                 migrations.RunSQL(

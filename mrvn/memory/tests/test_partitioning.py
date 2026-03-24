@@ -179,6 +179,18 @@ class PartitionIntegrationTests(TransactionTestCase):
     def _make_customer(self, name: str = "Test Customer", org: str = "test-org") -> Customer:
         return Customer.objects.create(name=name, github_org=org)
 
+    def _make_session(self, customer: Customer) -> "Session":
+        from channels.models import Channel, ChatRoom  # noqa: PLC0415
+        from django.contrib.auth import get_user_model  # noqa: PLC0415
+
+        from memory.models import Session  # noqa: PLC0415
+
+        User = get_user_model()
+        user = User.objects.create_user(username=f"user_{customer.id.hex[:8]}", password="x")
+        channel = Channel.objects.create(name=f"ch_{customer.id.hex[:8]}", channel_type="telegram", owner=user)
+        chat_room = ChatRoom.objects.create(channel=channel, platform_chat_id=f"room_{customer.id.hex[:8]}")
+        return Session.objects.create(chat_room=chat_room, customer=customer)
+
     def _make_partition(self, customer_id: UUID) -> PostgresListPartition:
         from psqlextra.backend.schema import PostgresSchemaEditor  # noqa: PLC0415
 
@@ -223,14 +235,12 @@ class PartitionIntegrationTests(TransactionTestCase):
 
     def test_data_routes_to_correct_partition(self):
         """Test that data routes to the correct customer partition."""
-        from agents.models import Agent  # noqa: PLC0415
-
         customer = self._make_customer("Data Routing Test", "org-dr")
-        agent = Agent.objects.create(name="Test Agent", model_name="test-model")
+        session = self._make_session(customer)
         self._make_partition(customer.id)
 
         chunk = SessionEmbeddingChunk.objects.create(
-            agent=agent,
+            session=session,
             customer_id=customer.id,
             source="message",
             source_id=1,
@@ -245,17 +255,16 @@ class PartitionIntegrationTests(TransactionTestCase):
 
     def test_cross_customer_isolation(self):
         """Test that chunks from different customers are isolated by partition."""
-        from agents.models import Agent  # noqa: PLC0415
-
         customer_a = self._make_customer("Customer A", "org-a")
         customer_b = self._make_customer("Customer B", "org-b")
-        agent = Agent.objects.create(name="Shared Agent", model_name="test-model")
+        session_a = self._make_session(customer_a)
+        session_b = self._make_session(customer_b)
 
         self._make_partition(customer_a.id)
         self._make_partition(customer_b.id)
 
         SessionEmbeddingChunk.objects.create(
-            agent=agent,
+            session=session_a,
             customer_id=customer_a.id,
             source="message",
             source_id=100,
@@ -264,7 +273,7 @@ class PartitionIntegrationTests(TransactionTestCase):
             content_hash="hash_a",
         )
         SessionEmbeddingChunk.objects.create(
-            agent=agent,
+            session=session_b,
             customer_id=customer_b.id,
             source="message",
             source_id=200,
