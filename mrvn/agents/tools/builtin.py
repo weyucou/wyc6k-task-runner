@@ -333,6 +333,7 @@ def register_builtin_tools(
     registry: Any,
     agent_id: int | None = None,
     session_id: int | None = None,
+    s3_prefix: str = "",
 ) -> None:
     """Register all built-in tools with the given registry.
 
@@ -343,8 +344,10 @@ def register_builtin_tools(
         registry: The ToolRegistry instance.
         agent_id: Optional agent ID for memory search context.
         session_id: Optional session ID for memory search context.
+        s3_prefix: Optional S3 prefix for the S3MemoryWriteTool.
     """
     from agents.tools.coding import register_coding_tools  # noqa: PLC0415
+    from agents.tools.s3_memory import S3MemoryWriteTool  # noqa: PLC0415
 
     core_tools = [
         DateTimeTool(),
@@ -354,6 +357,7 @@ def register_builtin_tools(
         MemoryStoreTool(),
         MemoryRetrieveTool(),
         MemorySearchTool(agent_id=agent_id, session_id=session_id),
+        S3MemoryWriteTool(s3_prefix=s3_prefix),
     ]
 
     for tool in core_tools:

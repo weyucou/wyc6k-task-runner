@@ -30,6 +30,7 @@ class AgentRunner:
         registry: ToolRegistry | None = None,
         register_builtins: bool = True,
         session_id: int | None = None,
+        s3_prefix: str = "",
     ) -> None:
         """Initialize the agent runner.
 
@@ -38,6 +39,7 @@ class AgentRunner:
             registry: Optional custom tool registry.
             register_builtins: Whether to register built-in tools.
             session_id: Optional session ID for memory search context.
+            s3_prefix: S3 prefix for the S3MemoryWriteTool (pre-fills context).
         """
         self.agent = agent
         self.registry = registry or ToolRegistry()
@@ -45,7 +47,7 @@ class AgentRunner:
 
         if register_builtins:
             agent_id = agent.id if agent else None
-            register_builtin_tools(self.registry, agent_id=agent_id, session_id=session_id)
+            register_builtin_tools(self.registry, agent_id=agent_id, session_id=session_id, s3_prefix=s3_prefix)
 
     async def get_client(self) -> Any:
         """Get or create the LLM client."""
@@ -55,6 +57,23 @@ class AgentRunner:
             else:
                 raise ValueError("No agent configured")
         return self._client
+
+    def _inject_context(self, s3_prefix: str) -> None:
+        """Pre-fill S3MemoryWriteTool with the customer S3 prefix.
+
+        Call this after construction when the CustomerContextBundle is available.
+        If the tool is already registered it is replaced with a new instance
+        carrying the correct prefix.
+
+        Args:
+            s3_prefix: Full S3 prefix, e.g. 's3://bucket/customers/c-1/projects/repo'.
+        """
+        from agents.tools.s3_memory import S3MemoryWriteTool  # noqa: PLC0415
+
+        tool = S3MemoryWriteTool(s3_prefix=s3_prefix)
+        # Remove stale registration if present, then re-register.
+        self.registry.unregister(tool.name)
+        self.registry.register(tool)
 
     def register_tool(self, tool: Any) -> None:
         """Register a tool with the runner.
