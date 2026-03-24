@@ -4,13 +4,52 @@ import logging
 from typing import Any
 
 from commons.rate_limiter import rate_limiter_registry
+from memory.models import Message, MessageRole as MemoryMessageRole
 
 from agents.llm import LLMMessage, LLMResponse
+from agents.llm.base import ToolCall
 from agents.llm.factory import create_client_from_agent
 from agents.tools import ToolRegistry
 from agents.tools.builtin import register_builtin_tools
 
 logger = logging.getLogger(__name__)
+
+
+def session_messages_to_llm_messages(records: list[Any]) -> list[LLMMessage]:
+    """Convert a list of memory.Message records to LLMMessage objects.
+
+    System messages are skipped — system prompt is handled separately.
+    Assistant messages reconstruct tool_calls from raw_data if present.
+    Tool result messages use tool_call_id and tool_name from the record.
+
+    Args:
+        records: Ordered list of memory.Message instances.
+
+    Returns:
+        List of LLMMessage objects in the same order.
+    """
+    messages: list[LLMMessage] = []
+    for record in records:
+        if record.role == MemoryMessageRole.USER:
+            messages.append(LLMMessage.user(record.content))
+        elif record.role == MemoryMessageRole.ASSISTANT:
+            tool_calls = None
+            raw_tool_calls = record.raw_data.get("tool_calls") if record.raw_data else None
+            if raw_tool_calls:
+                tool_calls = [
+                    ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"]) for tc in raw_tool_calls
+                ]
+            messages.append(LLMMessage.assistant(record.content, tool_calls))
+        elif record.role == MemoryMessageRole.TOOL:
+            messages.append(
+                LLMMessage.tool_result(
+                    tool_call_id=record.tool_call_id,
+                    content=record.content,
+                    name=record.tool_name or None,
+                )
+            )
+        # Skip system messages — handled via system_prompt parameter
+    return messages
 
 
 class AgentRunner:
@@ -98,10 +137,27 @@ class AgentRunner:
         )
         await limiter.acquire_async()
 
+    async def _load_session_transcript(self, session: Any, n: int) -> list[LLMMessage]:
+        """Load the last N messages from a session and convert to LLMMessage objects.
+
+        Args:
+            session: memory.Session instance.
+            n: Maximum number of messages to load.
+
+        Returns:
+            List of LLMMessage objects in chronological order.
+        """
+        records: list[Any] = []
+        async for record in Message.objects.filter(session=session).order_by("-created_datetime")[:n]:
+            records.append(record)
+        records.reverse()
+        return session_messages_to_llm_messages(records)
+
     async def run(
         self,
         messages: list[LLMMessage],
         *,
+        session: Any | None = None,
         system_prompt: str | None = None,
         enable_tools: bool = True,
         tool_names: list[str] | None = None,
@@ -111,6 +167,7 @@ class AgentRunner:
 
         Args:
             messages: Conversation messages.
+            session: Optional memory.Session instance for transcript replay.
             system_prompt: Optional system prompt override.
             enable_tools: Whether to enable tool calling.
             tool_names: Optional list of tool names to enable.
@@ -121,6 +178,12 @@ class AgentRunner:
         """
         # Apply rate limiting
         await self._check_rate_limit()
+
+        # Inject prior session transcript when configured
+        if session is not None and self.agent is not None and self.agent.context_window_messages > 0:
+            transcript = await self._load_session_transcript(session, self.agent.context_window_messages)
+            if transcript:
+                messages = transcript + messages
 
         # Get client
         client = await self.get_client()

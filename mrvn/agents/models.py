@@ -88,6 +88,12 @@ class Agent(TimestampedModel):
         help_text="Memory search config: max_results, min_score, hybrid_weights, etc.",
     )
 
+    # Session transcript replay
+    context_window_messages = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of prior session messages to inject as context on resume (0 = disabled)",
+    )
+
     # Additional config (stop sequences, etc.)
     config = models.JSONField(default=dict, blank=True)
 
