@@ -1,6 +1,10 @@
 import secrets
 import time
 import uuid
+from typing import Any
+
+import boto3
+from django.conf import settings
 
 
 def uuidv7() -> uuid.UUID:
@@ -25,3 +29,13 @@ def uuidv7() -> uuid.UUID:
     value[8] = (value[8] & 0x3F) | 0x80
 
     return uuid.UUID(bytes=bytes(value))
+
+
+def get_s3_client() -> Any:
+    """Return a boto3 S3 client using the S3_ENDPOINT_URL from settings.
+
+    Defaults to the AWS regional endpoint (https://s3.{region}.amazonaws.com).
+    Set S3_ENDPOINT_URL=http://localhost:4566 in the environment to route
+    requests to a local LocalStack instance instead.
+    """
+    return boto3.client("s3", endpoint_url=settings.S3_ENDPOINT_URL)

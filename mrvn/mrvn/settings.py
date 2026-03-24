@@ -268,6 +268,8 @@ LOGGING = {
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
 AWS_DEFAULT_REGION = AWS_REGION
 
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", f"https://s3.{AWS_REGION}.amazonaws.com")
+
 # CSRF Settings
 # https://docs.djangoproject.com/en/2.2/ref/settings/#std:setting-CSRF_COOKIE_HTTPONLY
 CSRF_COOKIE_SECURE = False
