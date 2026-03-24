@@ -1,10 +1,10 @@
-# Marvin Manager
+# wyc6k-task-runner
 
-A Django-based AI assistant platform with multi-channel messaging support (Telegram, Slack) and multiple LLM backends (Anthropic Claude, Google Gemini, Ollama, vLLM).
+The **agent runtime** of the WYC6k multi-tenant agent harness. Dequeues `TaskEnvelope` messages from SQS, runs an LLM agent in a tool-call loop against a GitHub issue, and writes memory back to S3 on completion.
 
 ## System Architecture
 
-marvin-manager is the agent runtime of the **WYC6k** multi-tenant agent harness. See [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec) for the full system architecture, and [ARCHITECTURE.md](ARCHITECTURE.md) for marvin-manager internals.
+wyc6k-task-runner is the agent runtime of the **WYC6k** multi-tenant agent harness. See [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec) for the full system architecture, and [ARCHITECTURE.md](ARCHITECTURE.md) for wyc6k-task-runner internals.
 
 ## Quick Start
 
