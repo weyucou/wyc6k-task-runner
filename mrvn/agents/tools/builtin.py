@@ -286,17 +286,24 @@ class MemorySearchTool(BaseTool):
         config = MemorySearchConfig(max_results=min(max(1, max_results), 10))
         service = MemorySearchService(config)
 
-        # Get session if we have a session_id
-        session = None
-        if self.session_id:
-            with contextlib.suppress(Session.DoesNotExist):
-                session = Session.objects.get(id=self.session_id)
+        # Session is required for memory search
+        if not self.session_id:
+            return ToolResult.success(
+                output="No relevant memories found (no active session).",
+                data={"query": query, "results": [], "count": 0},
+            )
+        try:
+            session = Session.objects.get(id=self.session_id)
+        except Session.DoesNotExist:
+            return ToolResult.success(
+                output="No relevant memories found (session not found).",
+                data={"query": query, "results": [], "count": 0},
+            )
 
         # Perform search
         results = service.search(
             query=query,
             session=session,
-            agent_id=self.agent_id,
             search_type=search_type,
         )
 

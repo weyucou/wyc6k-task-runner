@@ -78,7 +78,7 @@ class Session(TimestampedModel):
         return f"Session {self.pk} - {self.chat_room}"
 
 
-class Message(TimestampedModel):
+class SessionMessage(TimestampedModel):
     """A single message in a conversation."""
 
     session = models.ForeignKey(
@@ -118,7 +118,7 @@ class Message(TimestampedModel):
         return f"[{self.role}] {preview}"
 
 
-class ConversationSummary(TimestampedModel):
+class SessionSummary(TimestampedModel):
     """Summarized context from older messages to maintain long-term memory."""
 
     session = models.ForeignKey(
@@ -132,13 +132,13 @@ class ConversationSummary(TimestampedModel):
 
     # Range of messages this summary covers
     first_message = models.ForeignKey(
-        Message,
+        SessionMessage,
         on_delete=models.SET_NULL,
         null=True,
         related_name="+",
     )
     last_message = models.ForeignKey(
-        Message,
+        SessionMessage,
         on_delete=models.SET_NULL,
         null=True,
         related_name="+",
@@ -146,7 +146,7 @@ class ConversationSummary(TimestampedModel):
 
     class Meta:
         ordering = ["-created_datetime"]
-        verbose_name_plural = "Conversation Summaries"
+        verbose_name_plural = "Session Summaries"
 
     def __str__(self) -> str:
         return f"Summary for Session {self.session_id} ({self.messages_summarized} messages)"
@@ -160,22 +160,26 @@ class ChunkSource(StrEnum):
     FILE = "file"
 
 
-class EmbeddingChunk(PostgresPartitionedModel):
-    """Vector embeddings for memory search, partitioned by agent.
+class SessionEmbeddingChunk(PostgresPartitionedModel):
+    """Vector embeddings for memory search, partitioned by customer.
 
     Uses pgvector for efficient similarity search and psqlextra
-    for table partitioning on agent_id.
+    for table partitioning on customer_id.
     """
 
     class PartitioningMeta:
         method = PostgresPartitioningMethod.LIST
-        key = ["agent_id"]
+        key = ["customer_id"]
 
     id = models.BigAutoField(primary_key=True)
 
-    # Partition key - required for list partitioning
-    agent = models.ForeignKey(
-        "agents.Agent",
+    # Partition key — customer for tenant isolation
+    customer_id = models.UUIDField(
+        help_text="Customer ID for tenant isolation (partition key)",
+    )
+
+    session = models.ForeignKey(
+        Session,
         on_delete=models.CASCADE,
         related_name="embedding_chunks",
     )
@@ -223,14 +227,14 @@ class EmbeddingChunk(PostgresPartitionedModel):
             # ef_construction=128: Better graph quality during build (default=64)
             # See: https://github.com/pgvector/pgvector#hnsw
             HnswIndex(
-                name="embedding_chunk_hnsw_idx",
+                name="sessionembeddingchunk_hnsw_idx",
                 fields=["embedding"],
                 m=24,
                 ef_construction=128,
                 opclasses=["vector_cosine_ops"],
             ),
-            models.Index(fields=["agent", "source", "source_id"]),
-            models.Index(fields=["agent", "content_hash"]),
+            models.Index(fields=["session", "source", "source_id"]),
+            models.Index(fields=["session", "content_hash"]),
         ]
 
     def __str__(self) -> str:

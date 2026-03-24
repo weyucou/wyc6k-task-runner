@@ -4,26 +4,24 @@ Implements OpenClaw-inspired memory search with:
 - Vector embeddings stored in PostgreSQL with pgvector
 - Text search for keyword matching
 - Hybrid scoring with configurable weights
-- Table partitioning by agent for performance
+- Table partitioning by customer_id for tenant isolation
 """
 
 import hashlib
 import logging
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from django.db.models import Q
 from pydantic import BaseModel, Field
 
 from memory.models import (
     ChunkSource,
-    ConversationSummary,
     EmbeddingCache,
-    EmbeddingChunk,
-    Message,
+    Session,
+    SessionEmbeddingChunk,
+    SessionMessage,
+    SessionSummary,
 )
-
-if TYPE_CHECKING:
-    from memory.models import Session
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +59,6 @@ class MemorySearchService:
     """Service for searching agent memory using pgvector + text hybrid search."""
 
     def __init__(self, config: MemorySearchConfig | None = None) -> None:
-        """Initialize the search service.
-
-        Args:
-            config: Optional search configuration.
-        """
         self.config = config or MemorySearchConfig()
         self._embedder = None
 
@@ -82,19 +75,11 @@ class MemorySearchService:
         return self._embedder if self._embedder else None
 
     def get_embedding(self, text: str) -> list[float] | None:
-        """Get embedding vector for text, using cache if available.
-
-        Args:
-            text: Text to embed.
-
-        Returns:
-            List of floats representing the embedding, or None if unavailable.
-        """
+        """Get embedding vector for text, using cache if available."""
         embedder = self._get_embedder()
         if not embedder:
             return None
 
-        # Check cache first
         content_hash = hashlib.sha256(text.encode()).hexdigest()
         cached = EmbeddingCache.objects.filter(
             embedding_model=self.config.embedding_model,
@@ -104,11 +89,9 @@ class MemorySearchService:
         if cached:
             return list(cached.embedding)
 
-        # Generate new embedding
         embedding = embedder.encode(text, convert_to_numpy=True)
         embedding_list = embedding.tolist()
 
-        # Cache it
         EmbeddingCache.objects.create(
             embedding_model=self.config.embedding_model,
             content_hash=content_hash,
@@ -121,31 +104,36 @@ class MemorySearchService:
         """Generate SHA256 hash for content deduplication."""
         return hashlib.sha256(text.encode()).hexdigest()
 
-    def index_message(self, message: Message, agent_id: int) -> EmbeddingChunk | None:
+    def index_message(self, message: SessionMessage) -> SessionEmbeddingChunk | None:
         """Index a message for vector search.
 
+        Derives customer_id from message.session.customer_id.
+        Raises ValueError if the session has no customer_id set.
+
         Args:
-            message: Message to index.
-            agent_id: Agent ID for partitioning.
+            message: SessionMessage to index.
 
         Returns:
-            Created EmbeddingChunk or None if embedding failed.
+            Created SessionEmbeddingChunk or None if embedding failed.
         """
+        customer_id = message.session.customer_id
+        if customer_id is None:
+            raise ValueError(f"Session {message.session_id} has no customer_id set")
+
         embedding = self.get_embedding(message.content)
         if not embedding:
             return None
 
         content_hash = self.content_hash(message.content)
 
-        # Check if already indexed
-        existing = EmbeddingChunk.objects.filter(
-            agent_id=agent_id,
+        existing = SessionEmbeddingChunk.objects.filter(
+            customer_id=customer_id,
+            session=message.session,
             source=ChunkSource.MESSAGE.value,
             source_id=message.id,
         ).first()
 
         if existing:
-            # Update if content changed
             if existing.content_hash != content_hash:
                 existing.text = message.content
                 existing.embedding = embedding
@@ -153,8 +141,9 @@ class MemorySearchService:
                 existing.save()
             return existing
 
-        return EmbeddingChunk.objects.create(
-            agent_id=agent_id,
+        return SessionEmbeddingChunk.objects.create(
+            customer_id=customer_id,
+            session=message.session,
             source=ChunkSource.MESSAGE.value,
             source_id=message.id,
             text=message.content,
@@ -163,16 +152,31 @@ class MemorySearchService:
             content_hash=content_hash,
         )
 
-    def index_summary(self, summary: ConversationSummary, agent_id: int) -> EmbeddingChunk | None:
-        """Index a conversation summary for vector search."""
+    def index_summary(self, summary: SessionSummary) -> SessionEmbeddingChunk | None:
+        """Index a session summary for vector search.
+
+        Derives customer_id from summary.session.customer_id.
+        Raises ValueError if the session has no customer_id set.
+
+        Args:
+            summary: SessionSummary to index.
+
+        Returns:
+            Created SessionEmbeddingChunk or None if embedding failed.
+        """
+        customer_id = summary.session.customer_id
+        if customer_id is None:
+            raise ValueError(f"Session {summary.session_id} has no customer_id set")
+
         embedding = self.get_embedding(summary.summary)
         if not embedding:
             return None
 
         content_hash = self.content_hash(summary.summary)
 
-        existing = EmbeddingChunk.objects.filter(
-            agent_id=agent_id,
+        existing = SessionEmbeddingChunk.objects.filter(
+            customer_id=customer_id,
+            session=summary.session,
             source=ChunkSource.SUMMARY.value,
             source_id=summary.id,
         ).first()
@@ -185,8 +189,9 @@ class MemorySearchService:
                 existing.save()
             return existing
 
-        return EmbeddingChunk.objects.create(
-            agent_id=agent_id,
+        return SessionEmbeddingChunk.objects.create(
+            customer_id=customer_id,
+            session=summary.session,
             source=ChunkSource.SUMMARY.value,
             source_id=summary.id,
             text=summary.summary,
@@ -195,38 +200,38 @@ class MemorySearchService:
             content_hash=content_hash,
         )
 
-    def text_search(
-        self,
-        query: str,
-        session: Session | None = None,
-        agent_id: int | None = None,
-    ) -> list[MemorySearchResult]:
-        """Perform text-based search on messages.
+    def text_search(self, query: str, session: Session) -> list[MemorySearchResult]:
+        """Perform text-based search on messages scoped to the given session.
 
-        Args:
-            query: Search query.
-            session: Optional session to limit search.
-            agent_id: Optional agent ID to limit search.
-
-        Returns:
-            List of search results.
+        customer_id is derived from session.customer_id for partition-pruned queries.
+        Raises ValueError if session has no customer_id set.
         """
+        customer_id = session.customer_id
+        if customer_id is None:
+            raise ValueError(f"Session {session.id} has no customer_id set")
+
         results: list[MemorySearchResult] = []
         query_lower = query.lower()
         words = query_lower.split()
 
-        # Search messages
-        message_qs = Message.objects.all()
-        if session:
-            message_qs = message_qs.filter(session=session)
-        elif agent_id:
-            message_qs = message_qs.filter(session__agent_id=agent_id)
+        indexed_message_ids = SessionEmbeddingChunk.objects.filter(
+            customer_id=customer_id,
+            source=ChunkSource.MESSAGE.value,
+        ).values_list("source_id", flat=True)
+        indexed_summary_ids = SessionEmbeddingChunk.objects.filter(
+            customer_id=customer_id,
+            source=ChunkSource.SUMMARY.value,
+        ).values_list("source_id", flat=True)
 
         q_filter = Q()
         for word in words:
             q_filter |= Q(content__icontains=word)
 
-        messages = message_qs.filter(q_filter).order_by("-created_datetime")[: self.config.max_results * 2]
+        messages = (
+            SessionMessage.objects.filter(session=session, id__in=indexed_message_ids)
+            .filter(q_filter)
+            .order_by("-created_datetime")[: self.config.max_results * 2]
+        )
 
         for msg in messages:
             content_lower = msg.content.lower()
@@ -247,14 +252,12 @@ class MemorySearchService:
                     )
                 )
 
-        # Search summaries
-        summary_qs = ConversationSummary.objects.all()
-        if session:
-            summary_qs = summary_qs.filter(session=session)
-        elif agent_id:
-            summary_qs = summary_qs.filter(session__agent_id=agent_id)
+        summaries = SessionSummary.objects.filter(
+            session=session,
+            id__in=indexed_summary_ids,
+            summary__icontains=query,
+        )[: self.config.max_results]
 
-        summaries = summary_qs.filter(summary__icontains=query)[: self.config.max_results]
         for summary in summaries:
             content_lower = summary.summary.lower()
             matches = sum(1 for word in words if word in content_lower)
@@ -277,51 +280,35 @@ class MemorySearchService:
         results.sort(key=lambda x: x.score, reverse=True)
         return results[: self.config.max_results]
 
-    def vector_search(
-        self,
-        query: str,
-        session: Session | None = None,
-        agent_id: int | None = None,
-    ) -> list[MemorySearchResult]:
+    def vector_search(self, query: str, session: Session) -> list[MemorySearchResult]:
         """Perform vector-based semantic search using pgvector.
 
-        Args:
-            query: Search query.
-            session: Optional session to limit search.
-            agent_id: Optional agent ID to limit search.
-
-        Returns:
-            List of search results sorted by similarity.
+        customer_id is derived from session.customer_id for partition-pruned queries.
+        Raises ValueError if session has no customer_id set.
         """
         from django.db import connection  # noqa: PLC0415
         from pgvector.django import CosineDistance  # noqa: PLC0415
+
+        customer_id = session.customer_id
+        if customer_id is None:
+            raise ValueError(f"Session {session.id} has no customer_id set")
 
         query_embedding = self.get_embedding(query)
         if not query_embedding:
             return []
 
-        results: list[MemorySearchResult] = []
-
-        # Set HNSW ef_search for better recall at query time
-        # Higher values improve recall with sublinear speed decrease
         with connection.cursor() as cursor:
             cursor.execute(f"SET hnsw.ef_search = {self.config.ef_search}")
 
-        # Query EmbeddingChunk with pgvector cosine distance
-        chunk_qs = EmbeddingChunk.objects.all()
-
-        if agent_id:
-            chunk_qs = chunk_qs.filter(agent_id=agent_id)
-
-        # Use pgvector's cosine distance operator
         chunks = (
-            chunk_qs.annotate(distance=CosineDistance("embedding", query_embedding))
+            SessionEmbeddingChunk.objects.filter(customer_id=customer_id, session=session)
+            .annotate(distance=CosineDistance("embedding", query_embedding))
             .order_by("distance")
             .values("id", "text", "source", "source_id", "distance")[: self.config.max_results]
         )
 
+        results: list[MemorySearchResult] = []
         for chunk in chunks:
-            # Convert distance to similarity score (1 - distance for cosine)
             score = 1 - chunk["distance"]
 
             if score >= self.config.min_score:
@@ -338,34 +325,17 @@ class MemorySearchService:
 
         return results
 
-    def hybrid_search(
-        self,
-        query: str,
-        session: Session | None = None,
-        agent_id: int | None = None,
-    ) -> list[MemorySearchResult]:
-        """Perform hybrid vector + text search.
-
-        Combines vector similarity and text matching with configurable weights.
-
-        Args:
-            query: Search query.
-            session: Optional session to limit search.
-            agent_id: Optional agent ID to limit search.
-
-        Returns:
-            List of search results with combined scores.
-        """
+    def hybrid_search(self, query: str, session: Session) -> list[MemorySearchResult]:
+        """Perform hybrid vector + text search."""
         if not self.config.enabled:
             return []
 
         vector_weight = self.config.hybrid_weights.get("vector", 0.7)
         text_weight = self.config.hybrid_weights.get("text", 0.3)
 
-        vector_results = self.vector_search(query, session, agent_id)
-        text_results = self.text_search(query, session, agent_id)
+        vector_results = self.vector_search(query, session)
+        text_results = self.text_search(query, session)
 
-        # Combine scores
         combined: dict[str, MemorySearchResult] = {}
 
         for result in vector_results:
@@ -385,29 +355,13 @@ class MemorySearchService:
         results.sort(key=lambda x: x.score, reverse=True)
         return results[: self.config.max_results]
 
-    def search(
-        self,
-        query: str,
-        session: Session | None = None,
-        agent_id: int | None = None,
-        search_type: str = "hybrid",
-    ) -> list[MemorySearchResult]:
-        """Search agent memory.
-
-        Args:
-            query: Search query.
-            session: Optional session to limit search.
-            agent_id: Optional agent ID to limit search.
-            search_type: Type of search ("hybrid", "vector", "text").
-
-        Returns:
-            List of search results.
-        """
+    def search(self, query: str, session: Session, search_type: str = "hybrid") -> list[MemorySearchResult]:
+        """Search agent memory."""
         if search_type == "vector":
-            return self.vector_search(query, session, agent_id)
+            return self.vector_search(query, session)
         if search_type == "text":
-            return self.text_search(query, session, agent_id)
-        return self.hybrid_search(query, session, agent_id)
+            return self.text_search(query, session)
+        return self.hybrid_search(query, session)
 
 
 # Global search service instance
