@@ -1,7 +1,7 @@
-"""Partition management for EmbeddingChunk table.
+"""Partition management for SessionEmbeddingChunk table.
 
-Uses psqlextra to manage list partitions by (customer_id, agent_id).
-Partitions are created automatically when new agents are added.
+Uses psqlextra to manage list partitions by customer_id.
+Partitions are created automatically when new customers are added.
 """
 
 from typing import TYPE_CHECKING, Any
@@ -18,14 +18,13 @@ if TYPE_CHECKING:
     from collections.abc import Generator
 
 
-def _partition_name(customer_id: UUID, agent_id: int) -> str:
+def _partition_name(customer_id: UUID) -> str:
     """Generate partition name within PostgreSQL's 63-char identifier limit.
 
-    Format: {first_16_hex_of_customer_uuid}_{agent_id}
-    Max length: 16 + 1 + 10 = 27 chars (plus table prefix memory_embeddingchunk_ = 49 total).
+    Format: {customer_uuid_hex} — full UUID without dashes (32 chars).
+    Max full name: memory_sessionembeddingchunk_{32} = 62 chars (within 63-char limit).
     """
-    customer_hex = str(customer_id).replace("-", "")[:16]
-    return f"{customer_hex}_{agent_id}"
+    return str(customer_id).replace("-", "")
 
 
 class PostgresListPartition(PostgresPartition):
@@ -50,28 +49,12 @@ class PostgresListPartition(PostgresPartition):
         schema_editor: PostgresSchemaEditor,
         comment: str | None = None,
     ) -> None:
-        if self.values and isinstance(self.values[0], (list, tuple)):
-            # Composite key partition — psqlextra's add_list_partition doesn't support
-            # tuple values, so use raw SQL for (customer_id, agent_id) pairs.
-            from django.db import connection  # noqa: PLC0415
-
-            table_name = model._meta.db_table
-            partition_table_name = f"{table_name}_{self._name}"
-            placeholders = ", ".join("(%s::uuid, %s)" for _ in self.values)
-            params = [item for v in self.values for item in (str(v[0]), v[1])]
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    f"CREATE TABLE {partition_table_name} PARTITION OF {table_name} "
-                    f"FOR VALUES IN ({placeholders})",
-                    params,
-                )
-        else:
-            schema_editor.add_list_partition(
-                model=model,
-                name=self._name,
-                values=self.values,
-                comment=comment,
-            )
+        schema_editor.add_list_partition(
+            model=model,
+            name=self._name,
+            values=self.values,
+            comment=comment,
+        )
 
     def delete(
         self,
@@ -81,40 +64,36 @@ class PostgresListPartition(PostgresPartition):
         schema_editor.delete_partition(model, self._name)
 
 
-class AgentListPartitioningStrategy(PostgresPartitioningStrategy):
-    """Strategy for creating list partitions per (customer_id, agent_id) pair."""
+class CustomerListPartitioningStrategy(PostgresPartitioningStrategy):
+    """Strategy for creating list partitions per customer."""
 
     def to_create(self) -> "Generator[PostgresPartition]":
-        """Generate partitions to create for each agent."""
-        from agents.models import Agent  # noqa: PLC0415
-        from memory.models import SENTINEL_CUSTOMER_ID  # noqa: PLC0415
+        """Generate partitions to create for each customer."""
+        from accounts.models import Customer  # noqa: PLC0415
 
-        for agent in Agent.objects.all():
-            # Use agent.customer_id once Agent gains that FK (issue #2).
-            # Until then, all agents land in the sentinel partition.
-            customer_id = getattr(agent, "customer_id", None) or SENTINEL_CUSTOMER_ID
+        for customer in Customer.objects.all():
             yield PostgresListPartition(
-                name=_partition_name(customer_id, agent.id),
-                values=[(customer_id, agent.id)],
+                name=_partition_name(customer.id),
+                values=[customer.id],
             )
 
     def to_delete(self) -> "Generator[PostgresPartition]":
         """Generate partitions to delete (none by default)."""
         # We don't auto-delete partitions - they should be manually removed
-        # when an agent is deleted if desired
+        # when a customer is deleted if desired
         return
         yield  # noqa: RET502 - makes this a generator
 
 
 def get_partitioning_manager() -> PostgresPartitioningManager:
-    """Create the partitioning manager for EmbeddingChunk."""
-    from memory.models import EmbeddingChunk  # noqa: PLC0415
+    """Create the partitioning manager for SessionEmbeddingChunk."""
+    from memory.models import SessionEmbeddingChunk  # noqa: PLC0415
 
     return PostgresPartitioningManager(
         configs=[
             PostgresPartitioningConfig(
-                model=EmbeddingChunk,
-                strategy=AgentListPartitioningStrategy(),
+                model=SessionEmbeddingChunk,
+                strategy=CustomerListPartitioningStrategy(),
             ),
         ]
     )

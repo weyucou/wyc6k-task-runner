@@ -10,20 +10,19 @@ CUSTOMER_B_ID = UUID("bbbbbbbb-0000-0000-0000-000000000002")
 
 
 class TextSearchCustomerIsolationTests(SimpleTestCase):
-    """Verify text_search scopes its EmbeddingChunk subquery by customer_id."""
+    """Verify text_search scopes its SessionEmbeddingChunk subquery by customer_id."""
 
     def _make_service(self):
         from memory.search import MemorySearchConfig, MemorySearchService
+
         config = MemorySearchConfig(embedding_model="mock-model")
         return MemorySearchService(config=config)
 
-    @patch("memory.search.EmbeddingChunk.objects")
-    @patch("memory.search.Message.objects")
-    @patch("memory.search.ConversationSummary.objects")
-    def test_customer_id_filter_applied_to_chunk_subquery(
-        self, mock_summary_mgr, mock_msg_mgr, mock_chunk_mgr
-    ) -> None:
-        """text_search passes customer_id to the EmbeddingChunk subquery filter."""
+    @patch("memory.search.SessionEmbeddingChunk.objects")
+    @patch("memory.search.SessionMessage.objects")
+    @patch("memory.search.SessionSummary.objects")
+    def test_customer_id_filter_applied_to_chunk_subquery(self, mock_summary_mgr, mock_msg_mgr, mock_chunk_mgr) -> None:
+        """text_search passes customer_id to the SessionEmbeddingChunk subquery filter."""
         # Arrange: no matching messages/summaries (empty results expected)
         mock_qs = MagicMock()
         mock_qs.values_list.return_value = []
@@ -34,24 +33,19 @@ class TextSearchCustomerIsolationTests(SimpleTestCase):
         svc = self._make_service()
         svc.text_search("secret", customer_id=CUSTOMER_A_ID)
 
-        # Assert: EmbeddingChunk.objects.filter was called with customer_id=CUSTOMER_A_ID
+        # Assert: SessionEmbeddingChunk.objects.filter was called with customer_id=CUSTOMER_A_ID
         calls = mock_chunk_mgr.filter.call_args_list
-        customer_ids_used = [
-            c.kwargs.get("customer_id") or (c.args[0] if c.args else None)
-            for c in calls
-        ]
+        customer_ids_used = [c.kwargs.get("customer_id") or (c.args[0] if c.args else None) for c in calls]
         self.assertIn(
             CUSTOMER_A_ID,
             customer_ids_used,
-            "text_search must filter EmbeddingChunk by customer_id when it is provided",
+            "text_search must filter SessionEmbeddingChunk by customer_id when it is provided",
         )
 
-    @patch("memory.search.EmbeddingChunk.objects")
-    @patch("memory.search.Message.objects")
-    @patch("memory.search.ConversationSummary.objects")
-    def test_different_customers_use_different_filters(
-        self, mock_summary_mgr, mock_msg_mgr, mock_chunk_mgr
-    ) -> None:
+    @patch("memory.search.SessionEmbeddingChunk.objects")
+    @patch("memory.search.SessionMessage.objects")
+    @patch("memory.search.SessionSummary.objects")
+    def test_different_customers_use_different_filters(self, mock_summary_mgr, mock_msg_mgr, mock_chunk_mgr) -> None:
         """Two text_search calls with different customer_ids produce different filters."""
         mock_qs = MagicMock()
         mock_qs.values_list.return_value = []
@@ -74,5 +68,3 @@ class TextSearchCustomerIsolationTests(SimpleTestCase):
         self.assertIn(CUSTOMER_A_ID, ids_a)
         self.assertIn(CUSTOMER_B_ID, ids_b)
         self.assertNotEqual(ids_a, ids_b)
-
-
