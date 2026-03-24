@@ -6,20 +6,21 @@ import unittest
 from typing import Any, ClassVar
 
 from botocore.exceptions import ClientError
+from django.test import TestCase, override_settings
 
 from agents.context import ContextBundleService, CustomerContextBundle, MemoryEntry
 from commons.functions import get_s3_client
 
+LOCALSTACK_ENDPOINT = "http://localhost:4566"
 BUCKET = "wyc6k-agent-contexts-test"
 CUSTOMER_PREFIX = "customers/cust-001"
 REPO_NAME = "my-repo"
 PROJECT_PREFIX = f"s3://{BUCKET}/{CUSTOMER_PREFIX}/projects/{REPO_NAME}"
 
-_AWS_ENV = {
+_AWS_CREDS_ENV = {
     "AWS_ACCESS_KEY_ID": "test",
     "AWS_SECRET_ACCESS_KEY": "test",
-    "AWS_DEFAULT_REGION": "us-east-1",
-    "AWS_ENDPOINT_URL": "http://localhost:4566",
+    "AWS_DEFAULT_REGION": "ap-northeast-1",
 }
 
 
@@ -30,12 +31,14 @@ def _clear_bucket(s3: Any, bucket: str) -> None:
             s3.delete_object(Bucket=bucket, Key=obj["Key"])
 
 
-class BaseLocalStackTest(unittest.TestCase):
+@override_settings(S3_ENDPOINT_URL=LOCALSTACK_ENDPOINT)
+class BaseLocalStackTest(TestCase):
     s3: ClassVar[Any]
 
     @classmethod
     def setUpClass(cls) -> None:
-        os.environ.update(_AWS_ENV)
+        super().setUpClass()
+        os.environ.update(_AWS_CREDS_ENV)
         cls.s3 = get_s3_client()
         cls.s3.create_bucket(Bucket=BUCKET)
 
@@ -43,6 +46,7 @@ class BaseLocalStackTest(unittest.TestCase):
     def tearDownClass(cls) -> None:
         _clear_bucket(cls.s3, BUCKET)
         cls.s3.delete_bucket(Bucket=BUCKET)
+        super().tearDownClass()
 
     def setUp(self) -> None:
         _clear_bucket(self.s3, BUCKET)
@@ -217,11 +221,14 @@ class PushMemoryNewlineTests(BaseLocalStackTest):
         self.assertEqual(body, "old content (no trailing newline)\n## New Entry\n")
 
 
-class ReadObjectRaisesOnUnexpectedErrorTests(unittest.TestCase):
+@override_settings(S3_ENDPOINT_URL=LOCALSTACK_ENDPOINT)
+class ReadObjectRaisesOnUnexpectedErrorTests(TestCase):
     """_read_object re-raises non-404 ClientError exceptions."""
 
+    @classmethod
     def setUpClass(cls) -> None:
-        os.environ.update(_AWS_ENV)
+        super().setUpClass()
+        os.environ.update(_AWS_CREDS_ENV)
 
     def test_reraises_non_404_error(self) -> None:
         svc = ContextBundleService()
