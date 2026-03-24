@@ -1,10 +1,17 @@
-"""Anthropic Claude LLM client with tool support."""
+"""OpenAI-compatible LLM client with tool support.
 
+This client works with:
+- OpenAI API
+- vLLM (OpenAI-compatible mode)
+- Any OpenAI-compatible API
+"""
+
+import json
 import logging
 import os
 from typing import Any
 
-from marvin_manager.llm.base import (
+from marvin.llm.base import (
     BaseLLMClient,
     LLMMessage,
     LLMResponse,
@@ -12,21 +19,14 @@ from marvin_manager.llm.base import (
     StopReason,
     ToolCall,
 )
-from marvin_manager.llm.definitions import (
-    AnthropicBlockTypes,
-    AnthropicContentTypes,
-    AnthropicRequest,
-    AnthropicRoles,
-    AnthropicStopReasons,
-)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-20250514"
+_DEFAULT_MODEL = "gpt-4o"
 
 
-class AnthropicClient(BaseLLMClient):
-    """Anthropic Claude client with native tool support."""
+class OpenAIClient(BaseLLMClient):
+    """OpenAI-compatible client with function calling support."""
 
     def __init__(
         self,
@@ -35,18 +35,18 @@ class AnthropicClient(BaseLLMClient):
         model: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize the Anthropic client."""
-        default_model = os.getenv("DEFAULT_ANTHROPIC_MODEL", _DEFAULT_MODEL)
+        """Initialize the OpenAI client."""
+        default_model = os.getenv("DEFAULT_OPENAI_MODEL", _DEFAULT_MODEL)
         super().__init__(api_key, base_url, model or default_model, **kwargs)
         self._client: Any = None
 
     def _get_client(self) -> Any:
-        """Get or create the Anthropic client."""
+        """Get or create the OpenAI client."""
         if self._client is None:
             try:
-                from anthropic import AsyncAnthropic  # noqa: PLC0415
+                from openai import AsyncOpenAI  # noqa: PLC0415
             except ImportError as err:
-                raise ImportError("anthropic package required: uv add anthropic") from err
+                raise ImportError("openai package required: uv add openai") from err
 
             client_kwargs: dict[str, Any] = {}
             if self.api_key:
@@ -54,47 +54,43 @@ class AnthropicClient(BaseLLMClient):
             if self.base_url:
                 client_kwargs["base_url"] = self.base_url
 
-            self._client = AsyncAnthropic(**client_kwargs)
+            self._client = AsyncOpenAI(**client_kwargs)
         return self._client
 
     def _convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
-        """Convert messages to Anthropic's format."""
+        """Convert messages to OpenAI's format."""
         result = []
 
         for msg in messages:
-            if msg.role == MessageRole.SYSTEM:
-                # System messages are handled separately in Anthropic
-                continue
-
             if msg.role == MessageRole.TOOL:
-                # Tool results use tool_result content block
+                # Tool results use function role in OpenAI
                 result.append(
                     {
-                        "role": AnthropicRoles.USER.value,
-                        "content": [
-                            {
-                                "type": AnthropicContentTypes.TOOL_RESULT.value,
-                                "tool_use_id": msg.tool_call_id,
-                                "content": msg.content,
-                            }
-                        ],
+                        "role": "tool",
+                        "tool_call_id": msg.tool_call_id,
+                        "content": msg.content,
                     }
                 )
             elif msg.role == MessageRole.ASSISTANT and msg.tool_calls:
                 # Assistant message with tool calls
-                content: list[dict[str, Any]] = []
-                if msg.content:
-                    content.append({"type": AnthropicContentTypes.TEXT.value, "text": msg.content})
-                for tc in msg.tool_calls:
-                    content.append(
-                        {
-                            "type": AnthropicContentTypes.TOOL_USE.value,
-                            "id": tc.id,
+                tool_calls_formatted = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
                             "name": tc.name,
-                            "input": tc.arguments,
-                        }
-                    )
-                result.append({"role": AnthropicRoles.ASSISTANT.value, "content": content})
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+                result.append(
+                    {
+                        "role": "assistant",
+                        "content": msg.content or None,
+                        "tool_calls": tool_calls_formatted,
+                    }
+                )
             else:
                 result.append(
                     {
@@ -106,37 +102,47 @@ class AnthropicClient(BaseLLMClient):
         return result
 
     def _parse_response(self, response: Any) -> LLMResponse:
-        """Parse Anthropic response into LLMResponse."""
-        content_parts = []
+        """Parse OpenAI response into LLMResponse."""
+        choice = response.choices[0]
+        message = choice.message
+
+        content = message.content or ""
         tool_calls = []
 
-        for block in response.content:
-            if block.type == AnthropicBlockTypes.TEXT.value:
-                content_parts.append(block.text)
-            elif block.type == AnthropicBlockTypes.TOOL_USE.value:
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except json.JSONDecodeError:
+                    arguments = {"raw": tc.function.arguments}
+
                 tool_calls.append(
                     ToolCall(
-                        id=block.id,
-                        name=block.name,
-                        arguments=block.input if isinstance(block.input, dict) else {},
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=arguments,
                     )
                 )
 
-        # Map stop reason
-        stop_reason_map = {
-            AnthropicStopReasons.END_TURN.value: StopReason.END_TURN,
-            AnthropicStopReasons.MAX_TOKENS.value: StopReason.MAX_TOKENS,
-            AnthropicStopReasons.TOOL_USE.value: StopReason.TOOL_USE,
-            AnthropicStopReasons.STOP_SEQUENCE.value: StopReason.STOP_SEQUENCE,
+        # Map finish reason
+        finish_reason_map = {
+            "stop": StopReason.END_TURN,
+            "length": StopReason.MAX_TOKENS,
+            "tool_calls": StopReason.TOOL_USE,
+            "function_call": StopReason.TOOL_USE,  # Legacy
         }
-        stop_reason = stop_reason_map.get(response.stop_reason, StopReason.END_TURN)
+        stop_reason = finish_reason_map.get(choice.finish_reason or "stop", StopReason.END_TURN)
+
+        # Token usage
+        input_tokens = response.usage.prompt_tokens if response.usage else 0
+        output_tokens = response.usage.completion_tokens if response.usage else 0
 
         return LLMResponse(
-            content="\n".join(content_parts),
+            content=content,
             stop_reason=stop_reason,
             tool_calls=tool_calls,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             model=response.model,
             raw_response=response.model_dump() if hasattr(response, "model_dump") else None,
         )
@@ -151,30 +157,37 @@ class AnthropicClient(BaseLLMClient):
         max_tokens: int = 4096,
         stop_sequences: list[str] | None = None,
     ) -> LLMResponse:
-        """Generate a response from Claude."""
+        """Generate a response from OpenAI-compatible API."""
         client = self._get_client()
 
-        # Build request using pydantic model for validation
-        request = AnthropicRequest(
-            model=self.model or _DEFAULT_MODEL,
-            messages=self._convert_messages(messages),  # type: ignore[arg-type]
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system_prompt,
-            tools=tools,
-            stop_sequences=stop_sequences,
-        )
+        # Prepare messages with system prompt
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        api_messages.extend(self._convert_messages(messages))
 
-        # Convert to dict, excluding None values
-        request_kwargs = request.model_dump(exclude_none=True)
+        # Build request
+        request_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": api_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+
+        if tools:
+            request_kwargs["tools"] = tools
+            request_kwargs["tool_choice"] = "auto"
+
+        if stop_sequences:
+            request_kwargs["stop"] = stop_sequences
 
         try:
-            response = await client.messages.create(**request_kwargs)
+            response = await client.chat.completions.create(**request_kwargs)
             return self._parse_response(response)
         except ImportError:
             raise
         except Exception as e:  # noqa: BLE001
-            logger.exception("Anthropic API error")
+            logger.exception("OpenAI API error")
             return LLMResponse(
                 content=f"Error: {e}",
                 stop_reason=StopReason.ERROR,
@@ -221,12 +234,10 @@ class AnthropicClient(BaseLLMClient):
                 logger.info("Executing tool: %s", tool_call.name)
 
                 try:
-                    # Execute tool via registry
                     if hasattr(tool_executor, "execute"):
                         result = await tool_executor.execute(tool_call.name, tool_call.arguments)
                         tool_output = result.output if hasattr(result, "output") else str(result)
                     else:
-                        # Assume it's a callable
                         result = await tool_executor(tool_call.name, tool_call.arguments)
                         tool_output = str(result)
                 except Exception as e:  # noqa: BLE001

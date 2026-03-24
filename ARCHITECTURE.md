@@ -7,11 +7,11 @@ The repository contains two implementations:
 | Package | Status | Description |
 |---------|--------|-------------|
 | `mrvn/` | Legacy | Django-based implementation with ORM, pgvector memory, and REST API |
-| `marvin_manager/` | Active | Pure-Python, stateless SQS worker — no Django dependency |
+| `marvin/` | Active | Pure-Python, stateless SQS worker — no Django dependency |
 
-`marvin_manager/` replaces `mrvn/` for the stateless SQS-based runtime. `mrvn/` remains in the repository during transition.
+`marvin/` replaces `mrvn/` for the stateless SQS-based runtime. `mrvn/` remains in the repository during transition.
 
-### `marvin_manager/` — Stateless SQS Worker
+### `marvin/` — Stateless SQS Worker
 
 The package receives a hydrated `TaskEnvelope` from SQS, pulls an S3 context bundle via `ContextBundleService`, and runs an `AgentRunner` loop to completion. There is no database or ORM dependency.
 
@@ -19,13 +19,13 @@ Key files:
 
 | File | Purpose |
 |------|---------|
-| `marvin_manager/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
-| `marvin_manager/worker.py` | SQS consumer loop entry point (`python -m marvin_manager`) |
-| `marvin_manager/runner.py` | `AgentRunner` — orchestrates tool-call loop with rate limiting |
-| `marvin_manager/context.py` | `ContextBundleService` — reads customer context from S3 |
-| `marvin_manager/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
-| `marvin_manager/tools/` | Tool base classes, registry, built-in tools, coding tools |
-| `marvin_manager/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
+| `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
+| `marvin/worker.py` | SQS consumer loop entry point (`python -m marvin`) |
+| `marvin/runner.py` | `AgentRunner` — orchestrates tool-call loop with rate limiting |
+| `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
+| `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
+| `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools |
+| `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
 
 #### TaskEnvelope flow
 

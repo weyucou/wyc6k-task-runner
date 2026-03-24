@@ -1,6 +1,6 @@
 """SQS consumer worker entry point.
 
-Run with: python -m marvin_manager.worker
+Run with: python -m marvin.worker
 """
 
 import asyncio
@@ -12,10 +12,10 @@ from typing import Any
 
 import boto3
 
-from marvin_manager.context import ContextBundleService
-from marvin_manager.llm import LLMMessage
-from marvin_manager.models import TaskEnvelope
-from marvin_manager.runner import AgentRunner
+from marvin.context import ContextBundleService
+from marvin.llm import LLMMessage
+from marvin.models import TaskEnvelope
+from marvin.runner import AgentRunner
 
 logger = logging.getLogger(__name__)
 

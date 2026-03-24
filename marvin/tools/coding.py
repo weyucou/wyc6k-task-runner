@@ -10,7 +10,7 @@ import threading
 from typing import Any
 from urllib.request import Request, urlopen
 
-from marvin_manager.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
+from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 

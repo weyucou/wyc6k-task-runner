@@ -1,9 +1,9 @@
-"""Tests for marvin_manager.models — AgentConfig, TaskEnvelope, ToolProfile."""
+"""Tests for marvin.models — AgentConfig, TaskEnvelope, ToolProfile."""
 
 import pytest
 from pydantic import ValidationError
 
-from marvin_manager.models import AgentConfig, LLMProvider, TaskEnvelope, ToolProfile
+from marvin.models import AgentConfig, LLMProvider, TaskEnvelope, ToolProfile
 
 
 class TestAgentConfig:

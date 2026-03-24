@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
-from marvin_manager.functions import get_s3_client
+from marvin.functions import get_s3_client
 
 logger = logging.getLogger(__name__)
 

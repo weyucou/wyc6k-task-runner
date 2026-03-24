@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any
 
-from marvin_manager.llm.base import (
+from marvin.llm.base import (
     BaseLLMClient,
     LLMMessage,
     LLMResponse,

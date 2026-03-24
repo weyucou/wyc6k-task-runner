@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from marvin_manager.definitions import StringEnumWithChoices
+from marvin.definitions import StringEnumWithChoices
 
 
 class AnthropicBlockTypes(StringEnumWithChoices):

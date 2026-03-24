@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from marvin_manager.llm.base import LLMMessage, LLMResponse, StopReason
-from marvin_manager.models import AgentConfig, LLMProvider, ToolProfile
-from marvin_manager.runner import AgentRunner
-from marvin_manager.tools import ToolRegistry
-from marvin_manager.tools.base import ToolResult
+from marvin.llm.base import LLMMessage, LLMResponse, StopReason
+from marvin.models import AgentConfig, LLMProvider, ToolProfile
+from marvin.runner import AgentRunner
+from marvin.tools import ToolRegistry
+from marvin.tools.base import ToolResult
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -57,7 +57,7 @@ class TestAgentRunnerGetTools:
     def test_anthropic_format(self) -> None:
         agent = _make_agent(provider=LLMProvider.ANTHROPIC)
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin_manager.tools.builtin import CalculatorTool
+        from marvin.tools.builtin import CalculatorTool
 
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("anthropic")
@@ -67,7 +67,7 @@ class TestAgentRunnerGetTools:
     def test_openai_format(self) -> None:
         agent = _make_agent(provider=LLMProvider.ANTHROPIC)
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin_manager.tools.builtin import CalculatorTool
+        from marvin.tools.builtin import CalculatorTool
 
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("openai")
@@ -77,7 +77,7 @@ class TestAgentRunnerGetTools:
     def test_vllm_uses_openai_format(self) -> None:
         agent = _make_agent()
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin_manager.tools.builtin import CalculatorTool
+        from marvin.tools.builtin import CalculatorTool
 
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("vllm")
@@ -86,7 +86,7 @@ class TestAgentRunnerGetTools:
     def test_ollama_uses_openai_format(self) -> None:
         agent = _make_agent()
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin_manager.tools.builtin import CalculatorTool
+        from marvin.tools.builtin import CalculatorTool
 
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("ollama")

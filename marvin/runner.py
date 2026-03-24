@@ -3,12 +3,12 @@
 import logging
 from typing import Any
 
-from marvin_manager.llm import LLMMessage, LLMResponse
-from marvin_manager.llm.factory import create_client_from_agent_config
-from marvin_manager.models import AgentConfig
-from marvin_manager.rate_limiter import rate_limiter_registry
-from marvin_manager.tools import ToolRegistry
-from marvin_manager.tools.builtin import register_builtin_tools
+from marvin.llm import LLMMessage, LLMResponse
+from marvin.llm.factory import create_client_from_agent_config
+from marvin.models import AgentConfig
+from marvin.rate_limiter import rate_limiter_registry
+from marvin.tools import ToolRegistry
+from marvin.tools.builtin import register_builtin_tools
 
 logger = logging.getLogger(__name__)
 

@@ -3,8 +3,8 @@
 import logging
 from typing import Any
 
-from marvin_manager.llm.base import BaseLLMClient
-from marvin_manager.models import LLMProvider
+from marvin.llm.base import BaseLLMClient
+from marvin.models import LLMProvider
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def create_llm_client(
         provider_str = provider.lower()
 
     if provider_str == LLMProvider.ANTHROPIC.value:
-        from marvin_manager.llm.anthropic_client import AnthropicClient  # noqa: PLC0415
+        from marvin.llm.anthropic_client import AnthropicClient  # noqa: PLC0415
 
         return AnthropicClient(
             api_key=api_key,
@@ -49,7 +49,7 @@ def create_llm_client(
         )
 
     if provider_str == LLMProvider.GEMINI.value:
-        from marvin_manager.llm.gemini_client import GeminiClient  # noqa: PLC0415
+        from marvin.llm.gemini_client import GeminiClient  # noqa: PLC0415
 
         return GeminiClient(
             api_key=api_key,
@@ -59,7 +59,7 @@ def create_llm_client(
         )
 
     if provider_str == LLMProvider.OLLAMA.value:
-        from marvin_manager.llm.ollama_client import OllamaClient  # noqa: PLC0415
+        from marvin.llm.ollama_client import OllamaClient  # noqa: PLC0415
 
         return OllamaClient(
             api_key=api_key,
@@ -70,7 +70,7 @@ def create_llm_client(
 
     if provider_str == LLMProvider.VLLM.value:
         # vLLM uses OpenAI-compatible API
-        from marvin_manager.llm.openai_client import OpenAIClient  # noqa: PLC0415
+        from marvin.llm.openai_client import OpenAIClient  # noqa: PLC0415
 
         return OpenAIClient(
             api_key=api_key or "dummy",  # vLLM may not require auth

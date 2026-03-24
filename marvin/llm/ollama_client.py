@@ -1,17 +1,11 @@
-"""OpenAI-compatible LLM client with tool support.
-
-This client works with:
-- OpenAI API
-- vLLM (OpenAI-compatible mode)
-- Any OpenAI-compatible API
-"""
+"""Ollama LLM client with tool support."""
 
 import json
 import logging
 import os
 from typing import Any
 
-from marvin_manager.llm.base import (
+from marvin.llm.base import (
     BaseLLMClient,
     LLMMessage,
     LLMResponse,
@@ -22,11 +16,15 @@ from marvin_manager.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gpt-4o"
+_DEFAULT_MODEL = "llama3.2"
+_DEFAULT_BASE_URL = "http://localhost:11434"
 
 
-class OpenAIClient(BaseLLMClient):
-    """OpenAI-compatible client with function calling support."""
+class OllamaClient(BaseLLMClient):
+    """Ollama client with tool support.
+
+    Ollama supports tool calling via its chat API for compatible models.
+    """
 
     def __init__(
         self,
@@ -35,59 +33,56 @@ class OpenAIClient(BaseLLMClient):
         model: str | None = None,
         **kwargs: Any,
     ) -> None:
-        """Initialize the OpenAI client."""
-        default_model = os.getenv("DEFAULT_OPENAI_MODEL", _DEFAULT_MODEL)
-        super().__init__(api_key, base_url, model or default_model, **kwargs)
+        """Initialize the Ollama client."""
+        default_base_url = os.getenv("DEFAULT_OLLAMA_BASE_URL", _DEFAULT_BASE_URL)
+        default_model = os.getenv("DEFAULT_OLLAMA_MODEL", _DEFAULT_MODEL)
+        super().__init__(
+            api_key,
+            base_url or default_base_url,
+            model or default_model,
+            **kwargs,
+        )
         self._client: Any = None
 
     def _get_client(self) -> Any:
-        """Get or create the OpenAI client."""
+        """Get or create the Ollama client."""
         if self._client is None:
             try:
-                from openai import AsyncOpenAI  # noqa: PLC0415
+                from ollama import AsyncClient  # noqa: PLC0415
             except ImportError as err:
-                raise ImportError("openai package required: uv add openai") from err
+                raise ImportError("ollama package required: uv add ollama") from err
 
-            client_kwargs: dict[str, Any] = {}
-            if self.api_key:
-                client_kwargs["api_key"] = self.api_key
-            if self.base_url:
-                client_kwargs["base_url"] = self.base_url
-
-            self._client = AsyncOpenAI(**client_kwargs)
+            self._client = AsyncClient(host=self.base_url)
         return self._client
 
     def _convert_messages(self, messages: list[LLMMessage]) -> list[dict[str, Any]]:
-        """Convert messages to OpenAI's format."""
+        """Convert messages to Ollama's format."""
         result = []
 
         for msg in messages:
             if msg.role == MessageRole.TOOL:
-                # Tool results use function role in OpenAI
+                # Tool results
                 result.append(
                     {
                         "role": "tool",
-                        "tool_call_id": msg.tool_call_id,
                         "content": msg.content,
                     }
                 )
             elif msg.role == MessageRole.ASSISTANT and msg.tool_calls:
-                # Assistant message with tool calls
+                # Assistant with tool calls
                 tool_calls_formatted = [
                     {
-                        "id": tc.id,
-                        "type": "function",
                         "function": {
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
-                        },
+                            "arguments": tc.arguments,
+                        }
                     }
                     for tc in msg.tool_calls
                 ]
                 result.append(
                     {
                         "role": "assistant",
-                        "content": msg.content or None,
+                        "content": msg.content or "",
                         "tool_calls": tool_calls_formatted,
                     }
                 )
@@ -101,41 +96,77 @@ class OpenAIClient(BaseLLMClient):
 
         return result
 
-    def _parse_response(self, response: Any) -> LLMResponse:
-        """Parse OpenAI response into LLMResponse."""
-        choice = response.choices[0]
-        message = choice.message
+    def _convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert tool definitions to Ollama format."""
+        ollama_tools = []
 
-        content = message.content or ""
+        for tool in tools:
+            # Handle different input formats
+            if "function" in tool:
+                # OpenAI format
+                ollama_tools.append(tool)
+            elif "input_schema" in tool:
+                # Anthropic format
+                ollama_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool.get("description", ""),
+                            "parameters": tool["input_schema"],
+                        },
+                    }
+                )
+            else:
+                # Direct format
+                ollama_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool["name"],
+                            "description": tool.get("description", ""),
+                            "parameters": tool.get("parameters", {}),
+                        },
+                    }
+                )
+
+        return ollama_tools
+
+    def _parse_response(self, response: dict[str, Any]) -> LLMResponse:
+        """Parse Ollama response into LLMResponse."""
+        message = response.get("message", {})
+        content = message.get("content", "")
         tool_calls = []
 
-        if message.tool_calls:
-            for tc in message.tool_calls:
-                try:
-                    arguments = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    arguments = {"raw": tc.function.arguments}
+        # Parse tool calls
+        if "tool_calls" in message:
+            for i, tc in enumerate(message["tool_calls"]):
+                func = tc.get("function", {})
+                arguments = func.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        arguments = {"raw": arguments}
 
                 tool_calls.append(
                     ToolCall(
-                        id=tc.id,
-                        name=tc.function.name,
+                        id=f"call_{i}",
+                        name=func.get("name", "unknown"),
                         arguments=arguments,
                     )
                 )
 
-        # Map finish reason
-        finish_reason_map = {
-            "stop": StopReason.END_TURN,
-            "length": StopReason.MAX_TOKENS,
-            "tool_calls": StopReason.TOOL_USE,
-            "function_call": StopReason.TOOL_USE,  # Legacy
-        }
-        stop_reason = finish_reason_map.get(choice.finish_reason or "stop", StopReason.END_TURN)
+        # Determine stop reason
+        stop_reason = StopReason.END_TURN
+        if tool_calls:
+            stop_reason = StopReason.TOOL_USE
+        elif response.get("done_reason") == "length":
+            stop_reason = StopReason.MAX_TOKENS
 
-        # Token usage
-        input_tokens = response.usage.prompt_tokens if response.usage else 0
-        output_tokens = response.usage.completion_tokens if response.usage else 0
+        # Token counts
+        input_tokens = response.get("prompt_eval_count", 0)
+        output_tokens = response.get("eval_count", 0)
 
         return LLMResponse(
             content=content,
@@ -143,8 +174,8 @@ class OpenAIClient(BaseLLMClient):
             tool_calls=tool_calls,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            model=response.model,
-            raw_response=response.model_dump() if hasattr(response, "model_dump") else None,
+            model=response.get("model", self.model or ""),
+            raw_response=response,
         )
 
     async def generate(
@@ -157,7 +188,7 @@ class OpenAIClient(BaseLLMClient):
         max_tokens: int = 4096,
         stop_sequences: list[str] | None = None,
     ) -> LLMResponse:
-        """Generate a response from OpenAI-compatible API."""
+        """Generate a response from Ollama."""
         client = self._get_client()
 
         # Prepare messages with system prompt
@@ -166,28 +197,32 @@ class OpenAIClient(BaseLLMClient):
             api_messages.append({"role": "system", "content": system_prompt})
         api_messages.extend(self._convert_messages(messages))
 
+        # Build options
+        options: dict[str, Any] = {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        }
+
+        if stop_sequences:
+            options["stop"] = stop_sequences
+
         # Build request
         request_kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": api_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "options": options,
         }
 
         if tools:
-            request_kwargs["tools"] = tools
-            request_kwargs["tool_choice"] = "auto"
-
-        if stop_sequences:
-            request_kwargs["stop"] = stop_sequences
+            request_kwargs["tools"] = self._convert_tools(tools)
 
         try:
-            response = await client.chat.completions.create(**request_kwargs)
+            response = await client.chat(**request_kwargs)
             return self._parse_response(response)
         except ImportError:
             raise
         except Exception as e:  # noqa: BLE001
-            logger.exception("OpenAI API error")
+            logger.exception("Ollama API error")
             return LLMResponse(
                 content=f"Error: {e}",
                 stop_reason=StopReason.ERROR,
@@ -213,7 +248,6 @@ class OpenAIClient(BaseLLMClient):
             iteration += 1
             logger.debug("Tool iteration %d/%d", iteration, max_iterations)
 
-            # Generate response
             response = await self.generate(
                 conversation,
                 system_prompt=system_prompt,
@@ -222,14 +256,11 @@ class OpenAIClient(BaseLLMClient):
                 max_tokens=max_tokens,
             )
 
-            # If no tool calls, we're done
             if not response.has_tool_calls:
                 return response, conversation
 
-            # Add assistant message with tool calls
             conversation.append(LLMMessage.assistant(response.content, response.tool_calls))
 
-            # Execute each tool and collect results
             for tool_call in response.tool_calls:
                 logger.info("Executing tool: %s", tool_call.name)
 
@@ -244,7 +275,6 @@ class OpenAIClient(BaseLLMClient):
                     logger.exception("Tool execution failed: %s", tool_call.name)
                     tool_output = f"Error executing tool: {e}"
 
-                # Add tool result to conversation
                 conversation.append(
                     LLMMessage.tool_result(
                         tool_call_id=tool_call.id,
@@ -253,7 +283,6 @@ class OpenAIClient(BaseLLMClient):
                     )
                 )
 
-        # Max iterations reached
         logger.warning("Max tool iterations reached")
         final_response = await self.generate(
             conversation,

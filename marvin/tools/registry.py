@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from marvin_manager.tools.base import BaseTool, ToolResult
+from marvin.tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
 

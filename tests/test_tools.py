@@ -1,10 +1,10 @@
-"""Tests for marvin_manager tool validation and execution."""
+"""Tests for marvin tool validation and execution."""
 
 import asyncio
 
 import pytest
 
-from marvin_manager.tools.builtin import (
+from marvin.tools.builtin import (
     BrowserTool,
     CalculatorTool,
     DateTimeTool,
@@ -12,7 +12,7 @@ from marvin_manager.tools.builtin import (
     MemoryStoreTool,
     WebSearchTool,
 )
-from marvin_manager.tools.registry import ToolRegistry
+from marvin.tools.registry import ToolRegistry
 
 
 # ---- CalculatorTool ----

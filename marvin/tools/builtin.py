@@ -4,7 +4,7 @@ import datetime
 import logging
 from typing import Any
 
-from marvin_manager.tools.base import BaseTool, ToolParameter, ToolResult
+from marvin.tools.base import BaseTool, ToolParameter, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,7 @@ def register_builtin_tools(
         registry: The ToolRegistry instance.
         session_id: Optional session ID for memory search context.
     """
-    from marvin_manager.tools.coding import register_coding_tools  # noqa: PLC0415
+    from marvin.tools.coding import register_coding_tools  # noqa: PLC0415
 
     core_tools = [
         DateTimeTool(),
