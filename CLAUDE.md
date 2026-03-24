@@ -8,10 +8,7 @@ Org-wide conventions (coding style, error handling, branching, testing, tool pre
 
 marvin-manager is the agent runtime of the WYC6k system. It provides the LLM harness, tool profiles, and SQS-based task dispatch that agent workers use to process tasks.
 
-The repository contains two packages:
-
-- `marvin/` — the active, pure-Python, stateless SQS worker (no Django). This is the package under active development.
-- `mrvn/` — the legacy Django implementation (ORM, pgvector memory, REST API). Kept during transition; do not delete.
+The `marvin/` package is a pure-Python, stateless SQS worker (no Django). It dequeues `TaskEnvelope` messages from SQS, runs an LLM agent in a tool-call loop, and writes results back.
 
 For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).
 
@@ -33,5 +30,4 @@ For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6
 ## Do Not
 
 - Do not add Django, psycopg, or DRF dependencies to `marvin/`.
-- Do not delete `mrvn/` — it is still the legacy app.
-- The `RateLimiterRegistry` in `marvin/rate_limiter.py` uses `str` keys (agent names), not `int` (DB IDs) as in the legacy `mrvn/commons/rate_limiter.py`.
+- The `RateLimiterRegistry` in `marvin/rate_limiter.py` uses `str` keys (agent names), not `int` (DB IDs).
