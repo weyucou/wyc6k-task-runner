@@ -1,5 +1,49 @@
 # Architecture — marvin-manager
 
+## Package Structure
+
+The repository contains two implementations:
+
+| Package | Status | Description |
+|---------|--------|-------------|
+| `mrvn/` | Legacy | Django-based implementation with ORM, pgvector memory, and REST API |
+| `marvin_manager/` | Active | Pure-Python, stateless SQS worker — no Django dependency |
+
+`marvin_manager/` replaces `mrvn/` for the stateless SQS-based runtime. `mrvn/` remains in the repository during transition.
+
+### `marvin_manager/` — Stateless SQS Worker
+
+The package receives a hydrated `TaskEnvelope` from SQS, pulls an S3 context bundle via `ContextBundleService`, and runs an `AgentRunner` loop to completion. There is no database or ORM dependency.
+
+Key files:
+
+| File | Purpose |
+|------|---------|
+| `marvin_manager/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
+| `marvin_manager/worker.py` | SQS consumer loop entry point (`python -m marvin_manager`) |
+| `marvin_manager/runner.py` | `AgentRunner` — orchestrates tool-call loop with rate limiting |
+| `marvin_manager/context.py` | `ContextBundleService` — reads customer context from S3 |
+| `marvin_manager/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
+| `marvin_manager/tools/` | Tool base classes, registry, built-in tools, coding tools |
+| `marvin_manager/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
+
+#### TaskEnvelope flow
+
+```
+SQS → poll_once() → TaskEnvelope.model_validate()
+    → ContextBundleService.pull(s3_prefix)  # fetch CLAUDE.md, SOPs, memories
+    → AgentRunner(agent=AgentConfig, session_id=str)
+    → runner.chat(user_message, ...)
+    → LLM client (generate / generate_with_tools loop)
+    → result dict → delete SQS message
+```
+
+#### MemorySearchTool in stateless mode
+
+`MemorySearchTool.execute()` returns an empty result in stateless mode. The tool is still registered in the registry so agents that reference it do not error — they simply receive "Memory search not available in stateless mode."
+
+
+
 marvin-manager is the **agent runtime** of the WYC6k system. It provides the LLM harness, tool profiles, and hybrid vector memory that agent workers use to process tasks.
 
 For the full system architecture see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).

@@ -17,27 +17,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "django>=5.2.8,<5.3",
-    "psycopg[binary]",
     "pydantic<3.0",
-    "whitenoise<7.0",
-    # Messaging integrations
-    "python-telegram-bot>=21.0",
-    "slack-bolt>=1.18.0",
     # LLM providers
     "anthropic>=0.40.0",
     "google-genai>=1.0.0",
     "ollama>=0.4.0",
     "openai>=1.50.0",  # For vLLM OpenAI-compatible API
-    # Production server
-    "gunicorn>=23.0.0",
     "httpx>=0.27.0",  # HTTP client for validations
     "boto3>=1.35.0",  # AWS S3 access for SOP sync
-    # API
-    "djangorestframework>=3.15.0",
     # Vector search for memory
-    "pgvector>=0.3.0",
-    "django-postgres-extra>=2.0.0",
     "sentence-transformers>=3.0.0",
     "numpy>=2.0.0",
 ]
@@ -52,7 +40,7 @@ dev = [
     "unittest-xml-reporting>=3.2.0",
     "poethepoet>=0.34.0",
     "pytest>=9.0.2",
-    "pytest-django>=4.12.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [build-system]
@@ -61,7 +49,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]  # list of folders that contain the packages (["."] by default)
-include = ["mrvn/*"]  # package names should match these glob patterns (["*"] by default)
+include = ["mrvn/*", "marvin_manager/*"]  # package names should match these glob patterns (["*"] by default)
 exclude = []  # exclude packages matching these glob patterns (empty by default)
 
 # Task runner
@@ -72,10 +60,10 @@ typecheck = "uv run pyright"
 
 [tool.poe.tasks.test]
 # run the test command in a shell
-shell = "cd mrvn && uv run python manage.py test --debug-mode"
+shell = "uv run pytest tests/ -v"
 
 [tool.pyright]
-include = ["mrvn", "notebooks"]
+include = ["mrvn", "marvin_manager", "notebooks"]
 exclude = ["**/.venv", "tmp/", "**/node_modules/", "**/__pycache__", "**/*.pyc", "**/tests/", "**/migrations/"]
 typeCheckingMode = "basic"
 pythonVersion = "3.14"
@@ -124,7 +112,7 @@ ignore = [
     "D400",
     "D401",
     "D415",
-    "DJ008",  # Model does not define `__str__` method
+    # "DJ008" removed — no longer needed without Django
     "DTZ005",
     "E111",
     "E114",
