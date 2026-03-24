@@ -211,20 +211,21 @@ class ApplyPatchTool(BaseTool):
             )
         except FileNotFoundError:
             return ToolResult.from_error("'patch' command not found. Install it with: apt install patch")
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult.from_error("patch command timed out")
         except OSError as exc:
             return ToolResult.from_error(f"Error applying patch: {exc}")
 
 
 class ExecTool(BaseTool):
-    """Run a shell command and return output."""
+    """Primary interface for invoking CLI tools and shell commands."""
 
     name = "exec"
     description = (
-        "Execute a shell command and return its output. "
-        "Provides access to the `gh` CLI for GitHub operations, "
-        "git, and any other installed command-line tools."
+        "The primary interface for invoking CLI tools and shell commands. "
+        "Use this to call any installed CLI — gh, git, askcc, aws, terraform, or any other tool on PATH. "
+        "Prefer this over specialised wrappers when a CLI already exists for the task. "
+        "Increase timeout for long-running tools (e.g. askcc spawns a Claude session and may take hours)."
     )
     require_approval = True
     parameters = [
@@ -244,13 +245,13 @@ class ExecTool(BaseTool):
         ToolParameter(
             name="timeout",
             type="number",
-            description="Timeout in seconds. Defaults to 60.",
+            description="Timeout in seconds. Defaults to 1800 (30 min). Increase for long-running CLI tools.",
             required=False,
-            default=60,
+            default=1800,
         ),
     ]
 
-    async def execute(self, command: str, cwd: str = "", timeout: int = 60) -> ToolResult:
+    async def execute(self, command: str, cwd: str = "", timeout: int = 1800) -> ToolResult:
         """Execute a shell command."""
         work_dir = os.path.expanduser(cwd) if cwd else None
         try:
@@ -487,7 +488,6 @@ class RealWebSearchTool(BaseTool):
                 "Obtain a key from https://api.search.brave.com/ and set it."
             )
 
-        import json  # noqa: PLC0415
 
         count = min(max(1, num_results), 10)
         url = f"https://api.search.brave.com/res/v1/web/search?q={query}&count={count}"
