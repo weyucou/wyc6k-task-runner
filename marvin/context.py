@@ -122,3 +122,39 @@ class ContextBundleService:
             ContentType="text/markdown",
         )
         logger.info("Wrote memory entry to s3://%s/%s", bucket, memory_key)
+
+    def push_conversation_summary(
+        self,
+        s3_prefix: str,
+        summary: Any,
+        chunk: Any,
+    ) -> None:
+        """Write a ConversationSummary and its EmbeddingChunk to S3 as JSON.
+
+        Files are stored under:
+          {prefix}/summaries/{session_id}/{summary_id}.json
+          {prefix}/summaries/{session_id}/chunks/{chunk_id}.json
+        """
+        parsed = urlparse(s3_prefix)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/").rstrip("/")
+
+        s3 = get_s3_client()
+
+        summary_key = f"{prefix}/summaries/{summary.session_id}/{summary.summary_id}.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=summary_key,
+            Body=summary.model_dump_json().encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Wrote ConversationSummary to s3://%s/%s", bucket, summary_key)
+
+        chunk_key = f"{prefix}/summaries/{summary.session_id}/chunks/{chunk.chunk_id}.json"
+        s3.put_object(
+            Bucket=bucket,
+            Key=chunk_key,
+            Body=chunk.model_dump_json().encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Wrote EmbeddingChunk to s3://%s/%s", bucket, chunk_key)

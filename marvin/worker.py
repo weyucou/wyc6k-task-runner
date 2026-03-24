@@ -14,6 +14,7 @@ import boto3
 
 from marvin.context import ContextBundleService
 from marvin.llm import LLMMessage
+from marvin.memory.summarizer import ConversationSummarizer
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 
@@ -72,6 +73,22 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
         system_prompt=system_prompt,
         enable_tools=envelope.enable_tools,
     )
+
+    summarizer = ConversationSummarizer(agent_config=envelope.agent)
+    summary_result = await summarizer.maybe_summarize(
+        session_id=envelope.session_id,
+        messages=history,
+    )
+    if summary_result is not None:
+        summary, chunk = summary_result
+        try:
+            context_service.push_conversation_summary(
+                s3_prefix=envelope.s3_context_prefix,
+                summary=summary,
+                chunk=chunk,
+            )
+        except Exception:
+            logger.exception("Failed to push conversation summary")
 
     return {
         "task_id": envelope.task_id,
