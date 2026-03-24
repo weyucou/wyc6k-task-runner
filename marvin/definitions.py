@@ -1,4 +1,7 @@
+import os
 from enum import Enum
+
+AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
 
 MAX_S3_BUCKET_LENGTH = 63
 MAX_S3_KEY_LENGTH = 1024
