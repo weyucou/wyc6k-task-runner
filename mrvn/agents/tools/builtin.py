@@ -3,9 +3,12 @@
 import contextlib
 import datetime
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agents.tools.base import BaseTool, ToolParameter, ToolResult
+
+if TYPE_CHECKING:
+    from agents.context import MemoryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -151,13 +154,13 @@ class BrowserTool(BaseTool):
         import urllib.request  # noqa: PLC0415
 
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: ASYNC210, S310
                 content = response.read().decode("utf-8", errors="replace")
             return ToolResult.success(
                 output=content,
                 data={"url": url, "length": len(content)},
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return ToolResult.from_error(f"Failed to fetch URL: {exc}")
 
 
@@ -260,6 +263,7 @@ class MemorySearchTool(BaseTool):
         config: dict[str, Any] | None = None,
         agent_id: int | None = None,
         session_id: int | None = None,
+        bundle_memories: list[MemoryEntry] | None = None,
     ) -> None:
         """Initialize with optional agent/session context.
 
@@ -267,10 +271,33 @@ class MemorySearchTool(BaseTool):
             config: Tool configuration.
             agent_id: Optional agent ID to limit search scope.
             session_id: Optional session ID to limit search scope.
+            bundle_memories: Optional pre-loaded memories from a CustomerContextBundle.
+                When provided, searches these in-memory instead of the database.
         """
         super().__init__(config)
         self.agent_id = agent_id
         self.session_id = session_id
+        self._bundle_memories = bundle_memories or []
+
+    def _search_bundle_memories(self, query: str, max_results: int) -> list[dict[str, Any]]:
+        """Search bundle memories using keyword matching."""
+        query_lower = query.lower()
+        results = []
+        for entry in self._bundle_memories:
+            if query_lower in entry.content.lower():
+                results.append(
+                    {
+                        "content": entry.content,
+                        "score": 1.0,
+                        "source": f"bundle:{entry.filename}",
+                        "metadata": {
+                            "date": str(entry.date),
+                            "filename": entry.filename,
+                            "is_weekly_summary": entry.is_weekly_summary,
+                        },
+                    }
+                )
+        return results[:max_results]
 
     async def execute(
         self,
@@ -279,11 +306,29 @@ class MemorySearchTool(BaseTool):
         max_results: int = 5,
     ) -> ToolResult:
         """Search conversation memory."""
+        max_results = min(max(1, max_results), 10)
+
+        if self._bundle_memories:
+            formatted = self._search_bundle_memories(query, max_results)
+            if not formatted:
+                return ToolResult.success(
+                    output="No relevant memories found.",
+                    data={"query": query, "results": [], "count": 0},
+                )
+            output_lines = [f"Found {len(formatted)} relevant memories:"]
+            for i, r in enumerate(formatted, 1):
+                output_lines.append(f"\n{i}. [{r['source']}] (score: {r['score']})")
+                output_lines.append(f"   {r['content'][:200]}...")
+            return ToolResult.success(
+                output="\n".join(output_lines),
+                data={"query": query, "results": formatted, "count": len(formatted)},
+            )
+
         from memory.models import Session  # noqa: PLC0415
         from memory.search import MemorySearchConfig, MemorySearchService  # noqa: PLC0415
 
         # Create search service with custom max_results
-        config = MemorySearchConfig(max_results=min(max(1, max_results), 10))
+        config = MemorySearchConfig(max_results=max_results)
         service = MemorySearchService(config)
 
         # Get session if we have a session_id
@@ -333,6 +378,7 @@ def register_builtin_tools(
     registry: Any,
     agent_id: int | None = None,
     session_id: int | None = None,
+    bundle_memories: list[MemoryEntry] | None = None,
 ) -> None:
     """Register all built-in tools with the given registry.
 
@@ -343,6 +389,7 @@ def register_builtin_tools(
         registry: The ToolRegistry instance.
         agent_id: Optional agent ID for memory search context.
         session_id: Optional session ID for memory search context.
+        bundle_memories: Optional pre-loaded memories from a CustomerContextBundle.
     """
     from agents.tools.coding import register_coding_tools  # noqa: PLC0415
 
@@ -353,7 +400,7 @@ def register_builtin_tools(
         BrowserTool(),
         MemoryStoreTool(),
         MemoryRetrieveTool(),
-        MemorySearchTool(agent_id=agent_id, session_id=session_id),
+        MemorySearchTool(agent_id=agent_id, session_id=session_id, bundle_memories=bundle_memories),
     ]
 
     for tool in core_tools:

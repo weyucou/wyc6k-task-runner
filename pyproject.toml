@@ -64,6 +64,10 @@ where = ["."]  # list of folders that contain the packages (["."] by default)
 include = ["mrvn/*"]  # package names should match these glob patterns (["*"] by default)
 exclude = []  # exclude packages matching these glob patterns (empty by default)
 
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "mrvn.settings"
+pythonpath = ["mrvn"]
+
 # Task runner
 [tool.poe.tasks]
 check = "uv run ruff check"

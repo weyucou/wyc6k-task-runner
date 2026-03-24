@@ -5,6 +5,7 @@ from typing import Any
 
 from commons.rate_limiter import rate_limiter_registry
 
+from agents.context import CustomerContextBundle
 from agents.llm import LLMMessage, LLMResponse
 from agents.llm.factory import create_client_from_agent
 from agents.tools import ToolRegistry
@@ -27,6 +28,7 @@ class AgentRunner:
         self,
         agent: Any | None = None,
         *,
+        context_bundle: CustomerContextBundle | None = None,
         registry: ToolRegistry | None = None,
         register_builtins: bool = True,
         session_id: int | None = None,
@@ -35,6 +37,7 @@ class AgentRunner:
 
         Args:
             agent: Optional Agent model instance.
+            context_bundle: Optional CustomerContextBundle to inject into the system prompt.
             registry: Optional custom tool registry.
             register_builtins: Whether to register built-in tools.
             session_id: Optional session ID for memory search context.
@@ -42,10 +45,29 @@ class AgentRunner:
         self.agent = agent
         self.registry = registry or ToolRegistry()
         self._client = None
+        self._context_prefix = ""
 
         if register_builtins:
             agent_id = agent.id if agent else None
-            register_builtin_tools(self.registry, agent_id=agent_id, session_id=session_id)
+            bundle_memories = context_bundle.daily_memories if context_bundle else None
+            register_builtin_tools(
+                self.registry, agent_id=agent_id, session_id=session_id, bundle_memories=bundle_memories
+            )
+
+        if context_bundle:
+            self._inject_context(context_bundle)
+
+    def _inject_context(self, bundle: CustomerContextBundle) -> None:
+        """Build context prefix from bundle and store it for prepending to system prompts."""
+        parts = []
+        if bundle.claude_md:
+            parts.append(bundle.claude_md)
+        if bundle.sops:
+            for filename, content in bundle.sops.items():
+                parts.append(f"## {filename}\n\n{content}")
+        if bundle.project_goals:
+            parts.append(bundle.project_goals)
+        self._context_prefix = "\n\n".join(parts)
 
     async def get_client(self) -> Any:
         """Get or create the LLM client."""
@@ -129,6 +151,10 @@ class AgentRunner:
         prompt = system_prompt
         if prompt is None and self.agent:
             prompt = self.agent.system_prompt
+
+        # Prepend context bundle content when available
+        if self._context_prefix:
+            prompt = f"{self._context_prefix}\n\n{prompt}" if prompt else self._context_prefix
 
         # Get tools if enabled
         tools = None
