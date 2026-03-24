@@ -298,23 +298,25 @@ class AgentViewSet(viewsets.ModelViewSet):
 
             service = MemorySearchService(config)
 
-            # Get session if provided
-            session = None
+            # Session is required for memory search
             session_id = data.get("session_id")
-            if session_id:
-                try:
-                    session = Session.objects.get(id=session_id, agent=agent)
-                except Session.DoesNotExist:
-                    return Response(
-                        {"error": "Session not found"},
-                        status=status.HTTP_404_NOT_FOUND,
-                    )
+            if not session_id:
+                return Response(
+                    {"error": "session_id is required"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                session = Session.objects.get(id=session_id, agent=agent)
+            except Session.DoesNotExist:
+                return Response(
+                    {"error": "Session not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
             # Perform search
             results = service.search(
                 query=data["query"],
                 session=session,
-                agent_id=agent.id,
                 search_type=data.get("search_type", "hybrid"),
             )
 

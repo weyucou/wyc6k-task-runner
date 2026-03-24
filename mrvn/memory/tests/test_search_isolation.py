@@ -34,8 +34,9 @@ class TextSearchCustomerIsolationTests(SimpleTestCase):
         mock_qs = MagicMock()
         mock_qs.values_list.return_value = []
         mock_chunk_mgr.filter.return_value = mock_qs
-        mock_msg_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
-        mock_summary_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
+        # MagicMock auto-handles chained .filter().order_by()[:n] and .filter()[:n]
+        mock_msg_mgr.filter.return_value = MagicMock()
+        mock_summary_mgr.filter.return_value = MagicMock()
 
         svc = self._make_service()
         session_a = _make_mock_session(CUSTOMER_A_ID)
@@ -57,8 +58,9 @@ class TextSearchCustomerIsolationTests(SimpleTestCase):
         mock_qs = MagicMock()
         mock_qs.values_list.return_value = []
         mock_chunk_mgr.filter.return_value = mock_qs
-        mock_msg_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
-        mock_summary_mgr.filter.return_value = MagicMock(filter=MagicMock(return_value=[]))
+        # MagicMock auto-handles chained .filter().order_by()[:n] and .filter()[:n]
+        mock_msg_mgr.filter.return_value = MagicMock()
+        mock_summary_mgr.filter.return_value = MagicMock()
 
         svc = self._make_service()
         svc.text_search("secret", session=_make_mock_session(CUSTOMER_A_ID))
