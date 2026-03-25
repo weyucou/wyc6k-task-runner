@@ -87,8 +87,8 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
                 summary=summary,
                 chunk=chunk,
             )
-        except Exception:
-            logger.exception("Failed to push conversation summary")
+        except Exception as exc:
+            logger.exception("Failed to push conversation summary: %s", exc)
 
     return {
         "task_id": envelope.task_id,

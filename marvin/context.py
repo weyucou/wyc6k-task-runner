@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
 from marvin.functions import get_s3_client
+from marvin.memory.models import ConversationSummary, EmbeddingChunk
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +127,8 @@ class ContextBundleService:
     def push_conversation_summary(
         self,
         s3_prefix: str,
-        summary: Any,
-        chunk: Any,
+        summary: ConversationSummary,
+        chunk: EmbeddingChunk,
     ) -> None:
         """Write a ConversationSummary and its EmbeddingChunk to S3 as JSON.
 
