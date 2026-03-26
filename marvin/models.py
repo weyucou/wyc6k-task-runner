@@ -39,6 +39,7 @@ class AgentConfig(BaseModel):
     memory_search_config: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
     api_key: str | None = None  # Provider API key
+    context_window_messages: int = 0  # 0 = disabled; >0 injects last N messages on resume
 
     def get_allowed_tools(self, available_tools: list[str]) -> list[str]:
         """Calculate which tools this agent can use."""

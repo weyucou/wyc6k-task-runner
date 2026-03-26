@@ -15,7 +15,7 @@ import boto3
 from marvin.context import ContextBundleService
 from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
-from marvin.runner import AgentRunner
+from marvin.runner import AgentRunner, history_to_llm_messages
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +48,7 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
     context = context_service.pull(envelope.s3_context_prefix)
     logger.info("Pulled context for customer=%s", context.customer_id)
 
-    messages: list[LLMMessage] = []
-    for msg in envelope.conversation_history:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        if role == "system":
-            messages.append(LLMMessage.system(content))
-        elif role == "assistant":
-            messages.append(LLMMessage.assistant(content))
-        else:
-            messages.append(LLMMessage.user(content))
+    messages: list[LLMMessage] = history_to_llm_messages(envelope.conversation_history)
 
     # Use agent's system prompt; fall back to S3 CLAUDE.md when unset
     system_prompt = envelope.agent.system_prompt or context.claude_md or None
