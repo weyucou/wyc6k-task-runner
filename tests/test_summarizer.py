@@ -1,136 +1,133 @@
-"""Tests for ConversationSummarizer."""
+"""Unit tests for ConversationSummarizer."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+import datetime
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
-from marvin.llm.base import LLMMessage, LLMResponse, StopReason
+from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason
+from marvin.memory.models import ConversationSummary, Message
 from marvin.memory.summarizer import ConversationSummarizer
-from marvin.models import AgentConfig, LLMProvider
 
 
-def _make_agent() -> AgentConfig:
-    return AgentConfig(
-        name="test-agent",
-        provider=LLMProvider.ANTHROPIC,
-        model_name="claude-sonnet-4-20250514",
-    )
-
-
-def _make_messages(count: int) -> list[LLMMessage]:
+def _make_messages(n: int) -> list[LLMMessage]:
     messages = []
-    for i in range(count):
-        if i % 2 == 0:
-            messages.append(LLMMessage.user(f"User message {i}"))
+    for i in range(n):
+        role = MessageRole.USER if i % 2 == 0 else MessageRole.ASSISTANT
+        if role == MessageRole.USER:
+            messages.append(LLMMessage.user(f"Message {i}"))
         else:
-            messages.append(LLMMessage.assistant(f"Assistant message {i}"))
+            messages.append(LLMMessage.assistant(f"Message {i}"))
     return messages
 
 
-class TestConversationSummarizer:
+def _make_mock_client(summary_text: str = "Summary of conversation.") -> MagicMock:
+    client = MagicMock()
+    response = LLMResponse(content=summary_text, stop_reason=StopReason.END_TURN)
+    client.generate = AsyncMock(return_value=response)
+    return client
+
+
+class TestConversationSummarizerBelowThreshold:
     def test_returns_none_when_below_threshold(self) -> None:
-        summarizer = ConversationSummarizer(_make_agent(), threshold=50, batch_size=20)
-        result = asyncio.run(summarizer.maybe_summarize("session-1", _make_messages(30)))
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=10, batch_size=5)
+        messages = _make_messages(5)
+
+        result = asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
+        assert result is None
+        client.generate.assert_not_called()
+
+    def test_returns_none_when_equal_to_threshold(self) -> None:
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=10, batch_size=5)
+        messages = _make_messages(10)
+
+        result = asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
         assert result is None
 
-    def test_returns_none_at_exact_threshold(self) -> None:
-        summarizer = ConversationSummarizer(_make_agent(), threshold=50, batch_size=20)
-        result = asyncio.run(summarizer.maybe_summarize("session-1", _make_messages(50)))
-        assert result is None
 
-    @patch("marvin.memory.summarizer._compute_embedding")
-    @patch("marvin.memory.summarizer.create_client_from_agent_config")
-    def test_creates_summary_when_above_threshold(
-        self,
-        mock_create_client: MagicMock,
-        mock_embedding: MagicMock,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.generate = AsyncMock(
-            return_value=LLMResponse(content="Summary text.", stop_reason=StopReason.END_TURN)
+class TestConversationSummarizerAboveThreshold:
+    def test_returns_summary_when_above_threshold(self) -> None:
+        client = _make_mock_client("This is the summary.")
+        summarizer = ConversationSummarizer(client=client, threshold=5, batch_size=3)
+        messages = _make_messages(10)
+
+        result = asyncio.run(summarizer.maybe_summarize("session-abc", messages))
+
+        assert result is not None
+        assert isinstance(result, ConversationSummary)
+        assert result.session_id == "session-abc"
+        assert result.summary_text == "This is the summary."
+
+    def test_summary_contains_original_messages(self) -> None:
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=5, batch_size=3)
+        messages = _make_messages(10)
+
+        result = asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
+        assert result is not None
+        assert result.message_count == 3
+        assert len(result.messages) == 3
+        assert all(isinstance(m, Message) for m in result.messages)
+
+    def test_summary_indices_cover_batch(self) -> None:
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=5, batch_size=4)
+        messages = _make_messages(10)
+
+        result = asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
+        assert result is not None
+        assert result.start_index == 0
+        assert result.end_index == 3
+
+    def test_llm_called_with_low_temperature(self) -> None:
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=5, batch_size=3)
+        messages = _make_messages(10)
+
+        asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
+        call_kwargs = client.generate.call_args[1]
+        assert call_kwargs.get("temperature") == 0.3
+
+    def test_does_not_modify_original_messages(self) -> None:
+        client = _make_mock_client()
+        summarizer = ConversationSummarizer(client=client, threshold=5, batch_size=3)
+        messages = _make_messages(10)
+        original_len = len(messages)
+
+        asyncio.run(summarizer.maybe_summarize("session-1", messages))
+
+        assert len(messages) == original_len
+
+
+class TestConversationSummaryModel:
+    def test_summary_id_auto_generated(self) -> None:
+        summary = ConversationSummary(
+            session_id="s1",
+            summary_text="text",
+            message_count=1,
+            messages=[Message(role="user", content="hi", timestamp=datetime.datetime.now(datetime.UTC))],
+            start_index=0,
+            end_index=0,
         )
-        mock_create_client.return_value = mock_client
-        mock_embedding.return_value = [0.1, 0.2, 0.3]
+        assert summary.summary_id
+        assert len(summary.summary_id) > 0
 
-        summarizer = ConversationSummarizer(_make_agent(), threshold=50, batch_size=20)
-        result = asyncio.run(summarizer.maybe_summarize("session-1", _make_messages(55)))
-
-        batch_size = 20
-        assert result is not None
-        summary, chunk = result
-        assert summary.session_id == "session-1"
-        assert summary.summary_text == "Summary text."
-        assert summary.message_count == batch_size
-        assert summary.start_index == 0
-        assert summary.end_index == batch_size
-        assert summary.embedding_chunk_id == chunk.chunk_id
-        assert chunk.session_id == "session-1"
-        assert chunk.embedding == [0.1, 0.2, 0.3]
-        assert chunk.text == "Summary text."
-
-    @patch("marvin.memory.summarizer._compute_embedding")
-    @patch("marvin.memory.summarizer.create_client_from_agent_config")
-    def test_summary_preserves_original_messages(
-        self,
-        mock_create_client: MagicMock,
-        mock_embedding: MagicMock,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.generate = AsyncMock(
-            return_value=LLMResponse(content="A summary.", stop_reason=StopReason.END_TURN)
-        )
-        mock_create_client.return_value = mock_client
-        mock_embedding.return_value = [0.5]
-
-        summarizer = ConversationSummarizer(_make_agent(), threshold=5, batch_size=3)
-        result = asyncio.run(summarizer.maybe_summarize("session-2", _make_messages(10)))
-
-        batch_size = 3
-        assert result is not None
-        summary, _ = result
-        assert len(summary.messages) == batch_size
-        assert summary.messages[0].role == "user"
-        assert summary.messages[0].content == "User message 0"
-        assert summary.messages[1].role == "assistant"
-        assert summary.messages[1].content == "Assistant message 1"
-
-    @patch("marvin.memory.summarizer._compute_embedding")
-    @patch("marvin.memory.summarizer.create_client_from_agent_config")
-    def test_summary_and_chunk_share_chunk_id(
-        self,
-        mock_create_client: MagicMock,
-        mock_embedding: MagicMock,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.generate = AsyncMock(return_value=LLMResponse(content="Linked.", stop_reason=StopReason.END_TURN))
-        mock_create_client.return_value = mock_client
-        mock_embedding.return_value = [0.0]
-
-        summarizer = ConversationSummarizer(_make_agent(), threshold=2, batch_size=2)
-        result = asyncio.run(summarizer.maybe_summarize("s", _make_messages(5)))
-
-        assert result is not None
-        summary, chunk = result
-        assert summary.embedding_chunk_id == chunk.chunk_id
-
-    @patch("marvin.memory.summarizer._compute_embedding")
-    @patch("marvin.memory.summarizer.create_client_from_agent_config")
-    def test_uses_configured_batch_size(
-        self,
-        mock_create_client: MagicMock,
-        mock_embedding: MagicMock,
-    ) -> None:
-        mock_client = MagicMock()
-        mock_client.generate = AsyncMock(
-            return_value=LLMResponse(content="Batch summary.", stop_reason=StopReason.END_TURN)
-        )
-        mock_create_client.return_value = mock_client
-        mock_embedding.return_value = []
-
-        summarizer = ConversationSummarizer(_make_agent(), threshold=10, batch_size=5)
-        result = asyncio.run(summarizer.maybe_summarize("s", _make_messages(15)))
-
-        batch_size = 5
-        assert result is not None
-        summary, _ = result
-        assert summary.message_count == batch_size
-        assert len(summary.messages) == batch_size
+    def test_two_summaries_have_different_ids(self) -> None:
+        kwargs: Any = {
+            "session_id": "s1",
+            "summary_text": "text",
+            "message_count": 1,
+            "messages": [Message(role="user", content="hi", timestamp=datetime.datetime.now(datetime.UTC))],
+            "start_index": 0,
+            "end_index": 0,
+        }
+        s1 = ConversationSummary(**kwargs)
+        s2 = ConversationSummary(**kwargs)
+        assert s1.summary_id != s2.summary_id

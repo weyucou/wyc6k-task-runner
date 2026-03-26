@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
 from marvin.functions import get_s3_client
-from marvin.memory.models import ConversationSummary, EmbeddingChunk
+from marvin.memory.models import ConversationSummary
 
 logger = logging.getLogger(__name__)
 
@@ -124,38 +124,37 @@ class ContextBundleService:
         )
         logger.info("Wrote memory entry to s3://%s/%s", bucket, memory_key)
 
-    def push_conversation_summary(
-        self,
-        s3_prefix: str,
-        summary: ConversationSummary,
-        chunk: EmbeddingChunk,
-    ) -> None:
-        """Write a ConversationSummary and its EmbeddingChunk to S3 as JSON.
+    def push_conversation_summary(self, s3_prefix: str, summary: ConversationSummary) -> None:
+        """Write a ConversationSummary to S3 under conversations/{session_id}/summaries/{summary_id}.json."""
+        parsed = urlparse(s3_prefix)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/").rstrip("/")
 
-        Files are stored under:
-          {prefix}/summaries/{session_id}/{summary_id}.json
-          {prefix}/summaries/{session_id}/chunks/{chunk_id}.json
-        """
+        key = f"{prefix}/conversations/{summary.session_id}/summaries/{summary.summary_id}.json"
+        s3 = get_s3_client()
+        s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=summary.model_dump_json().encode("utf-8"),
+            ContentType="application/json",
+        )
+        logger.info("Wrote conversation summary to s3://%s/%s", bucket, key)
+
+    def pull_conversation_summaries(self, s3_prefix: str, session_id: str) -> list[ConversationSummary]:
+        """Load all ConversationSummary objects for a session from S3."""
         parsed = urlparse(s3_prefix)
         bucket = parsed.netloc
         prefix = parsed.path.lstrip("/").rstrip("/")
 
         s3 = get_s3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        summaries_prefix = f"{prefix}/conversations/{session_id}/summaries/"
 
-        summary_key = f"{prefix}/summaries/{summary.session_id}/{summary.summary_id}.json"
-        s3.put_object(
-            Bucket=bucket,
-            Key=summary_key,
-            Body=summary.model_dump_json().encode("utf-8"),
-            ContentType="application/json",
-        )
-        logger.info("Wrote ConversationSummary to s3://%s/%s", bucket, summary_key)
-
-        chunk_key = f"{prefix}/summaries/{summary.session_id}/chunks/{chunk.chunk_id}.json"
-        s3.put_object(
-            Bucket=bucket,
-            Key=chunk_key,
-            Body=chunk.model_dump_json().encode("utf-8"),
-            ContentType="application/json",
-        )
-        logger.info("Wrote EmbeddingChunk to s3://%s/%s", bucket, chunk_key)
+        summaries = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=summaries_prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                body = self._read_object(s3, bucket, key)
+                if body:
+                    summaries.append(ConversationSummary.model_validate_json(body))
+        return summaries

@@ -17,6 +17,7 @@ from marvin.llm import LLMMessage
 from marvin.memory.summarizer import ConversationSummarizer
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
+from marvin.settings import CONVERSATION_SUMMARY_BATCH_SIZE, CONVERSATION_SUMMARY_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -74,21 +75,17 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
         enable_tools=envelope.enable_tools,
     )
 
-    summarizer = ConversationSummarizer(agent_config=envelope.agent)
-    summary_result = await summarizer.maybe_summarize(
-        session_id=envelope.session_id,
-        messages=history,
+    summarizer = ConversationSummarizer(
+        client=runner.get_client(),
+        threshold=CONVERSATION_SUMMARY_THRESHOLD,
+        batch_size=CONVERSATION_SUMMARY_BATCH_SIZE,
     )
-    if summary_result is not None:
-        summary, chunk = summary_result
+    if summary := await summarizer.maybe_summarize(envelope.session_id, history):
         try:
-            context_service.push_conversation_summary(
-                s3_prefix=envelope.s3_context_prefix,
-                summary=summary,
-                chunk=chunk,
-            )
-        except Exception as exc:
-            logger.exception("Failed to push conversation summary: %s", exc)
+            context_service.push_conversation_summary(envelope.s3_context_prefix, summary)
+            history = history[summary.end_index + 1 :]
+        except Exception:
+            logger.exception("Failed to push conversation summary")
 
     return {
         "task_id": envelope.task_id,
