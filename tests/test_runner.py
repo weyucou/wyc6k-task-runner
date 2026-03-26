@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from marvin.llm.base import LLMMessage, LLMResponse, StopReason
-from marvin.models import AgentConfig, LLMProvider, ToolProfile
-from marvin.runner import AgentRunner
+from marvin.models import AgentConfig, LLMProvider
+from marvin.runner import AgentRunner, history_to_llm_messages
 from marvin.tools import ToolRegistry
-from marvin.tools.base import ToolResult
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -141,9 +140,7 @@ class TestAgentRunnerChat:
         runner = AgentRunner(agent=agent, register_builtins=False)
         mock_client = self._patch_client(runner)
 
-        asyncio.run(
-            runner.chat("Hi", system_prompt="Override prompt.", enable_tools=False)
-        )
+        asyncio.run(runner.chat("Hi", system_prompt="Override prompt.", enable_tools=False))
 
         call_kwargs = mock_client.generate.call_args[1]
         assert call_kwargs.get("system_prompt") == "Override prompt."
@@ -155,3 +152,145 @@ class TestAgentRunnerChat:
 
         # Should complete without blocking
         asyncio.run(runner.chat("Hi", enable_tools=False))
+
+
+class TestHistoryToLlmMessages:
+    def test_user_message(self) -> None:
+        records = [{"role": "user", "content": "Hello"}]
+        result = history_to_llm_messages(records)
+        assert len(result) == 1
+        assert result[0].role.value == "user"
+        assert result[0].content == "Hello"
+
+    def test_assistant_message(self) -> None:
+        records = [{"role": "assistant", "content": "Hi there"}]
+        result = history_to_llm_messages(records)
+        assert len(result) == 1
+        assert result[0].role.value == "assistant"
+        assert result[0].content == "Hi there"
+        assert result[0].tool_calls is None
+
+    def test_assistant_message_with_tool_calls(self) -> None:
+        records = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc1", "name": "calculator", "arguments": {"expression": "1+1"}}],
+            }
+        ]
+        result = history_to_llm_messages(records)
+        assert len(result) == 1
+        assert result[0].tool_calls is not None
+        assert len(result[0].tool_calls) == 1
+        tc = result[0].tool_calls[0]
+        assert tc.id == "tc1"
+        assert tc.name == "calculator"
+        assert tc.arguments == {"expression": "1+1"}
+
+    def test_tool_result_message(self) -> None:
+        records = [{"role": "tool", "content": "2", "tool_call_id": "tc1", "name": "calculator"}]
+        result = history_to_llm_messages(records)
+        assert len(result) == 1
+        assert result[0].role.value == "tool"
+        assert result[0].content == "2"
+        assert result[0].tool_call_id == "tc1"
+        assert result[0].name == "calculator"
+
+    def test_system_message(self) -> None:
+        records = [{"role": "system", "content": "You are helpful."}]
+        result = history_to_llm_messages(records)
+        assert len(result) == 1
+        assert result[0].role.value == "system"
+
+    def test_unknown_role_falls_back_to_user(self) -> None:
+        records = [{"role": "unknown", "content": "test"}]
+        result = history_to_llm_messages(records)
+        assert result[0].role.value == "user"
+
+    def test_empty_records(self) -> None:
+        assert history_to_llm_messages([]) == []
+
+    def test_mixed_roles_preserves_order(self) -> None:
+        records = [
+            {"role": "user", "content": "Q"},
+            {"role": "assistant", "content": "A"},
+            {"role": "tool", "content": "result", "tool_call_id": "x"},
+        ]
+        result = history_to_llm_messages(records)
+        assert len(result) == 3
+        assert result[0].role.value == "user"
+        assert result[1].role.value == "assistant"
+        assert result[2].role.value == "tool"
+
+
+class TestContextWindowMessages:
+    def _patch_client(self, runner: AgentRunner, response_content: str = "Reply") -> MagicMock:
+        mock_client = MagicMock()
+        mock_response = _make_response(response_content)
+        mock_client.generate = AsyncMock(return_value=mock_response)
+        mock_client.generate_with_tools = AsyncMock(
+            return_value=(mock_response, [LLMMessage.user("Hi"), LLMMessage.assistant(response_content)])
+        )
+        runner._client = mock_client
+        return mock_client
+
+    def _get_input_messages(self, mock_client: MagicMock) -> list[LLMMessage]:
+        """Extract the messages list passed to generate, excluding any post-call appends.
+
+        When enable_tools=False, run() sets history=messages (same reference), so
+        chat()'s append mutates the list visible in call_args. We slice off the last
+        element (the assistant message appended after generate returns) to get the
+        exact list that was passed in.
+        """
+        raw: list[LLMMessage] = mock_client.generate.call_args[0][0]
+        return raw[:-1]  # exclude the assistant message appended by chat()
+
+    def test_zero_context_window_passes_full_history(self) -> None:
+        agent = _make_agent(context_window_messages=0)
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        mock_client = self._patch_client(runner)
+
+        history = [LLMMessage.user(f"msg{i}") for i in range(5)]
+        asyncio.run(runner.chat("new", conversation_history=history, enable_tools=False))
+
+        messages_passed = self._get_input_messages(mock_client)
+        # All 5 history messages + the new user message = 6
+        assert len(messages_passed) == 6
+
+    def test_context_window_limits_injected_messages(self) -> None:
+        agent = _make_agent(context_window_messages=2)
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        mock_client = self._patch_client(runner)
+
+        history = [LLMMessage.user(f"msg{i}") for i in range(5)]
+        asyncio.run(runner.chat("new", conversation_history=history, enable_tools=False))
+
+        messages_passed = self._get_input_messages(mock_client)
+        # Last 2 history messages + the new user message = 3
+        assert len(messages_passed) == 3
+        assert messages_passed[0].content == "msg3"
+        assert messages_passed[1].content == "msg4"
+        assert messages_passed[2].content == "new"
+
+    def test_context_window_larger_than_history_uses_full_history(self) -> None:
+        agent = _make_agent(context_window_messages=10)
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        mock_client = self._patch_client(runner)
+
+        history = [LLMMessage.user(f"msg{i}") for i in range(3)]
+        asyncio.run(runner.chat("new", conversation_history=history, enable_tools=False))
+
+        messages_passed = self._get_input_messages(mock_client)
+        # All 3 + new = 4
+        assert len(messages_passed) == 4
+
+    def test_context_window_with_no_history(self) -> None:
+        agent = _make_agent(context_window_messages=5)
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        mock_client = self._patch_client(runner)
+
+        asyncio.run(runner.chat("first message", enable_tools=False))
+
+        messages_passed = self._get_input_messages(mock_client)
+        assert len(messages_passed) == 1
+        assert messages_passed[0].content == "first message"

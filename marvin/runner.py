@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from marvin.llm import LLMMessage, LLMResponse
+from marvin.llm.base import ToolCall
 from marvin.llm.factory import create_client_from_agent_config
 from marvin.models import AgentConfig
 from marvin.rate_limiter import rate_limiter_registry
@@ -11,6 +12,50 @@ from marvin.tools import ToolRegistry
 from marvin.tools.builtin import register_builtin_tools
 
 logger = logging.getLogger(__name__)
+
+
+def history_to_llm_messages(records: list[dict[str, Any]]) -> list[LLMMessage]:
+    """Convert conversation history dicts to LLMMessage objects.
+
+    Handles user, assistant (with optional tool calls), tool result, and system
+    messages. System messages are included; unknown roles fall back to user.
+
+    Args:
+        records: List of message dicts with at minimum a "role" and "content" key.
+            Tool result records must include "tool_call_id".
+            Assistant records with tool calls must include "tool_calls" list.
+
+    Returns:
+        List of LLMMessage objects in the same order as the input.
+    """
+    messages: list[LLMMessage] = []
+    for record in records:
+        role = record.get("role", "user")
+        content = record.get("content", "")
+
+        if role == "system":
+            messages.append(LLMMessage.system(content))
+        elif role == "assistant":
+            tool_calls_data = record.get("tool_calls")
+            tool_calls: list[ToolCall] | None = None
+            if tool_calls_data:
+                tool_calls = [
+                    ToolCall(
+                        id=tc["id"],
+                        name=tc["name"],
+                        arguments=tc.get("arguments", {}),
+                    )
+                    for tc in tool_calls_data
+                ]
+            messages.append(LLMMessage.assistant(content, tool_calls))
+        elif role == "tool":
+            tool_call_id = record.get("tool_call_id", "")
+            name = record.get("name")
+            messages.append(LLMMessage.tool_result(tool_call_id, content, name))
+        else:
+            messages.append(LLMMessage.user(content))
+
+    return messages
 
 
 class AgentRunner:
@@ -179,8 +224,11 @@ class AgentRunner:
         Returns:
             Tuple of (assistant response text, updated history).
         """
-        messages = list(conversation_history or [])
-        messages.append(LLMMessage.user(user_message))
+        history = list(conversation_history or [])
+        n = self.agent.context_window_messages if self.agent else 0
+        if n > 0:
+            history = history[-n:]
+        messages = history + [LLMMessage.user(user_message)]
 
         response, history = await self.run(
             messages,
