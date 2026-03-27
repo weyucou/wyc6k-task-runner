@@ -58,6 +58,20 @@ class TestPushConversationSummary:
         assert parsed["message_count"] == _EXPECTED_MESSAGE_COUNT
 
 
+    @patch("marvin.context.get_s3_client")
+    def test_swallows_s3_errors(self, mock_get_s3_client: MagicMock) -> None:
+        mock_s3 = MagicMock()
+        mock_get_s3_client.return_value = mock_s3
+        mock_s3.put_object.side_effect = ClientError(
+            {"Error": {"Code": "NoSuchBucket", "Message": "Bucket not found"}}, "PutObject"
+        )
+
+        service = ContextBundleService()
+        summary = _make_summary()
+        # Must not raise — failures are logged and swallowed
+        service.push_conversation_summary("s3://my-bucket/customers/c1/projects/proj/", summary)
+
+
 class TestPullConversationSummaries:
     @patch("marvin.context.get_s3_client")
     def test_returns_empty_when_none_exist(self, mock_get_s3_client: MagicMock) -> None:
