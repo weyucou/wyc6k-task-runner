@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
 from marvin.functions import get_s3_client
+from marvin.memory.models import ConversationSummary
 
 logger = logging.getLogger(__name__)
 
@@ -122,3 +123,41 @@ class ContextBundleService:
             ContentType="text/markdown",
         )
         logger.info("Wrote memory entry to s3://%s/%s", bucket, memory_key)
+
+    def push_conversation_summary(self, s3_prefix: str, summary: ConversationSummary) -> None:
+        """Persist a ConversationSummary to S3.
+
+        Writes to {prefix}/conversations/{session_id}/summaries/{summary_id}.json
+        S3 write failures are logged and swallowed — they must not fail task delivery.
+        """
+        parsed = urlparse(s3_prefix)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/").rstrip("/")
+        key = f"{prefix}/conversations/{summary.session_id}/summaries/{summary.summary_id}.json"
+        s3 = get_s3_client()
+        try:
+            s3.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=summary.model_dump_json().encode("utf-8"),
+                ContentType="application/json",
+            )
+            logger.info("Wrote conversation summary %s to s3://%s/%s", summary.summary_id, bucket, key)
+        except Exception as exc:
+            logger.exception("Failed to write conversation summary %s to S3: %s", summary.summary_id, exc)
+
+    def pull_conversation_summaries(self, s3_prefix: str, session_id: str) -> list[ConversationSummary]:
+        """Load all persisted summaries for a session from S3."""
+        parsed = urlparse(s3_prefix)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/").rstrip("/")
+        summaries_prefix = f"{prefix}/conversations/{session_id}/summaries/"
+        s3 = get_s3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        summaries = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=summaries_prefix):
+            for obj in page.get("Contents", []):
+                raw = self._read_object(s3, bucket, obj["Key"])
+                if raw:
+                    summaries.append(ConversationSummary.model_validate_json(raw))
+        return summaries
