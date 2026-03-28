@@ -1136,6 +1136,83 @@ class GitHubPRTool(BaseTool):
             return ToolResult.from_error(f"Error running gh: {exc}")
 
 
+_ASKCC_DEFAULT_TIMEOUT = 10800  # 3 hours
+
+
+class AskccRunTool(BaseTool):
+    """Run askcc CLI actions on GitHub issue URLs."""
+
+    name = "askcc_run"
+    description = (
+        "Invoke askcc CLI actions (prepare, develop, review, diagnose, explore, plan) "
+        "on a GitHub issue URL. Requires the askcc CLI to be installed."
+    )
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action to run: 'prepare', 'develop', 'review', 'diagnose', 'explore', 'plan'.",
+            required=True,
+            enum=["prepare", "develop", "review", "diagnose", "explore", "plan"],
+        ),
+        ToolParameter(
+            name="issue_url",
+            type="string",
+            description="Full URL of the GitHub issue (e.g. https://github.com/owner/repo/issues/1).",
+            required=True,
+        ),
+        ToolParameter(
+            name="config",
+            type="object",
+            description="Optional configuration. Supports 'timeout' (seconds, default 10800).",
+            required=False,
+            default=None,
+        ),
+    ]
+
+    async def execute(
+        self,
+        action: str,
+        issue_url: str,
+        config: dict | None = None,
+    ) -> ToolResult:
+        """Run askcc {action} {issue_url} via subprocess."""
+        timeout = _ASKCC_DEFAULT_TIMEOUT
+        if config and "timeout" in config:
+            timeout = int(config["timeout"])
+
+        cmd = ["askcc", action, issue_url]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except TimeoutError:
+                proc.terminate()
+                await proc.wait()
+                return ToolResult.from_error(f"askcc {action} timed out after {timeout}s")
+            out = stdout.decode(errors="replace")
+            err = stderr.decode(errors="replace")
+            if proc.returncode == 0:
+                return ToolResult.success(
+                    output=out or f"askcc {action} completed successfully.",
+                    data={"action": action, "issue_url": issue_url, "return_code": proc.returncode},
+                )
+            return ToolResult.from_error(
+                f"askcc exited with code {proc.returncode}: {err}",
+                output=out,
+            )
+        except FileNotFoundError:
+            return ToolResult.from_error("'askcc' CLI not found. Install the askcc CLI to use this tool.")
+        except OSError as exc:
+            return ToolResult.from_error(f"Error running askcc: {exc}")
+
+
 def register_coding_tools(registry: Any) -> None:
     """Register all coding tools with the given registry.
 
@@ -1157,6 +1234,7 @@ def register_coding_tools(registry: Any) -> None:
         BrowserAutomationTool(),
         GitHubIssueTool(),
         GitHubPRTool(),
+        AskccRunTool(),
     ]
     for tool in tools:
         try:
