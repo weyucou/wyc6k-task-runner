@@ -1,6 +1,7 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -9,11 +10,10 @@ from marvin.tools.builtin import (
     CalculatorTool,
     DateTimeTool,
     MemorySearchTool,
-    MemoryStoreTool,
     WebSearchTool,
 )
+from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool
 from marvin.tools.registry import ToolRegistry
-
 
 # ---- CalculatorTool ----
 
@@ -221,3 +221,250 @@ class TestToolRegistry:
         assert len(tools) == 1
         assert tools[0]["type"] == "function"
         assert tools[0]["function"]["name"] == "calculator"
+
+
+# ---- GitHubIssueTool ----
+
+
+class TestGitHubIssueTool:
+    def setup_method(self) -> None:
+        self.tool = GitHubIssueTool()
+
+    def test_require_approval_is_true(self) -> None:
+        assert self.tool.require_approval is True
+
+    def test_missing_required_action(self) -> None:
+        is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
+        assert not is_valid
+        assert "action" in error
+
+    def test_missing_required_issue_url(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "view"})
+        assert not is_valid
+        assert "issue_url" in error
+
+    def test_invalid_action_enum(self) -> None:
+        is_valid, error = self.tool.validate_params(
+            {"action": "delete", "issue_url": "https://github.com/o/r/issues/1"}
+        )
+        assert not is_valid
+        assert "must be one of" in error.lower()
+
+    def test_valid_view_params(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "view", "issue_url": "https://github.com/o/r/issues/1"})
+        assert is_valid
+        assert error is None
+
+    def test_missing_token_returns_error(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error == "GITHUB_TOKEN environment variable is not set"
+
+    def test_missing_gh_cli_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "'gh' CLI not found" in result.error
+
+    def test_comment_missing_body_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            result = asyncio.run(
+                self.tool.execute(action="comment", issue_url="https://github.com/o/r/issues/1", body="")
+            )
+        assert result.error is not None
+        assert "body is required" in result.error
+
+    def test_add_label_missing_label_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            result = asyncio.run(
+                self.tool.execute(action="add_label", issue_url="https://github.com/o/r/issues/1", label="")
+            )
+        assert result.error is not None
+        assert "label is required" in result.error
+
+    def test_success_view(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"issue output", b""))
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is None
+        assert "issue output" in result.output
+
+    def test_gh_nonzero_exit_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"not found"))
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "gh exited with code 1" in result.error
+
+
+# ---- GitHubPRTool ----
+
+
+class TestGitHubPRTool:
+    def setup_method(self) -> None:
+        self.tool = GitHubPRTool()
+
+    def test_require_approval_is_true(self) -> None:
+        assert self.tool.require_approval is True
+
+    def test_missing_required_action(self) -> None:
+        is_valid, error = self.tool.validate_params({"pr_url": "https://github.com/o/r/pull/1"})
+        assert not is_valid
+        assert "action" in error
+
+    def test_invalid_action_enum(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "merge", "pr_url": "https://github.com/o/r/pull/1"})
+        assert not is_valid
+        assert "must be one of" in error.lower()
+
+    def test_valid_view_params(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "view", "pr_url": "https://github.com/o/r/pull/1"})
+        assert is_valid
+        assert error is None
+
+    def test_missing_token_returns_error(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        assert result.error == "GITHUB_TOKEN environment variable is not set"
+
+    def test_missing_gh_cli_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        assert result.error is not None
+        assert "'gh' CLI not found" in result.error
+
+    def test_create_missing_title_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            result = asyncio.run(self.tool.execute(action="create", title=""))
+        assert result.error is not None
+        assert "title is required" in result.error
+
+    def test_view_missing_pr_url_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            result = asyncio.run(self.tool.execute(action="view", pr_url=""))
+        assert result.error is not None
+        assert "pr_url is required" in result.error
+
+    def test_update_body_missing_pr_url_returns_error(self) -> None:
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            result = asyncio.run(self.tool.execute(action="update_body", pr_url=""))
+        assert result.error is not None
+        assert "pr_url is required" in result.error
+
+    def test_success_view(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"pr output", b""))
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        assert result.error is None
+        assert "pr output" in result.output
+
+    def test_gh_nonzero_exit_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"error msg"))
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
+            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        assert result.error is not None
+        assert "gh exited with code 1" in result.error
+
+
+# ---- AskccRunTool ----
+
+
+class TestAskccRunTool:
+    def setup_method(self) -> None:
+        self.tool = AskccRunTool()
+
+    def test_require_approval_is_true(self) -> None:
+        assert self.tool.require_approval is True
+
+    def test_missing_required_action(self) -> None:
+        is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
+        assert not is_valid
+        assert "action" in error
+
+    def test_missing_required_issue_url(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "prepare"})
+        assert not is_valid
+        assert "issue_url" in error
+
+    def test_invalid_action_enum(self) -> None:
+        is_valid, error = self.tool.validate_params(
+            {"action": "deploy", "issue_url": "https://github.com/o/r/issues/1"}
+        )
+        assert not is_valid
+        assert "must be one of" in error.lower()
+
+    def test_valid_params_each_action(self) -> None:
+        for action in ("prepare", "develop", "review", "diagnose", "explore", "plan"):
+            is_valid, error = self.tool.validate_params(
+                {"action": action, "issue_url": "https://github.com/o/r/issues/1"}
+            )
+            assert is_valid, f"action={action} should be valid, got error: {error}"
+            assert error is None
+
+    def test_missing_askcc_cli_returns_error(self) -> None:
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+            result = asyncio.run(self.tool.execute(action="prepare", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "'askcc' CLI not found" in result.error
+
+    def test_nonzero_exit_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"something went wrong"))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "askcc exited with code 1" in result.error
+
+    def test_success(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="plan", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is None
+        assert "done" in result.output
+
+    def test_timeout_terminates_process_and_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = None
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
+        mock_proc.wait = AsyncMock(return_value=None)
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
+        mock_proc.terminate.assert_called_once()
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_config_timeout_override(self) -> None:
+        custom_timeout = 600
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait,
+        ):
+            asyncio.run(
+                self.tool.execute(
+                    action="review",
+                    issue_url="https://github.com/o/r/issues/1",
+                    config={"timeout": custom_timeout},
+                )
+            )
+        _, kwargs = mock_wait.call_args
+        assert kwargs.get("timeout") == custom_timeout
