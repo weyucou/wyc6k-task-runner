@@ -287,9 +287,58 @@ class MemorySearchTool(BaseTool):
         )
 
 
+class S3MemoryWriteTool(BaseTool):
+    """Tool for appending memory entries to the daily S3 memory file."""
+
+    name = "s3_memory_write"
+    description = (
+        "Append a memory entry to the daily memory file on S3."
+        " Use this to record observations, decisions, or context for future sessions."
+    )
+    parameters = [
+        ToolParameter(
+            name="section_header",
+            type="string",
+            description="The markdown section header for this memory entry (e.g., 'Observations', 'Decisions Made').",
+            required=True,
+        ),
+        ToolParameter(
+            name="content",
+            type="string",
+            description="The content to record under the section header.",
+            required=True,
+        ),
+    ]
+
+    def __init__(self, s3_prefix: str, config: dict[str, Any] | None = None) -> None:
+        """Initialize with the S3 prefix for the project memory."""
+        super().__init__(config)
+        self.s3_prefix = s3_prefix
+
+    async def execute(self, section_header: str, content: str) -> ToolResult:
+        """Append a memory entry to the daily S3 memory file."""
+        from marvin.context import ContextBundleService, MemoryEntry  # noqa: PLC0415
+
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        filename = f"{today.isoformat()}.md"
+        markdown_block = f"## {section_header}\n\n{content}\n"
+        entry = MemoryEntry(date=today, filename=filename, content=markdown_block)
+
+        try:
+            ContextBundleService().push_memory(self.s3_prefix, entry)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult.from_error(str(exc))
+
+        return ToolResult.success(
+            output=f"Memory entry '{section_header}' written to {filename}.",
+            data={"filename": filename, "section_header": section_header},
+        )
+
+
 def register_builtin_tools(
     registry: Any,
     session_id: str | None = None,
+    s3_prefix: str | None = None,
 ) -> None:
     """Register all built-in tools with the given registry.
 
@@ -299,6 +348,7 @@ def register_builtin_tools(
     Args:
         registry: The ToolRegistry instance.
         session_id: Optional session ID for memory search context.
+        s3_prefix: Optional S3 prefix for registering S3MemoryWriteTool.
     """
     from marvin.tools.coding import register_coding_tools  # noqa: PLC0415
 
@@ -317,5 +367,11 @@ def register_builtin_tools(
             registry.register(tool)
         except ValueError:
             logger.debug("Tool %s already registered", tool.name)
+
+    if s3_prefix:
+        try:
+            registry.register(S3MemoryWriteTool(s3_prefix=s3_prefix))
+        except ValueError:
+            logger.debug("Tool %s already registered", S3MemoryWriteTool.name)
 
     register_coding_tools(registry)

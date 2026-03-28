@@ -70,6 +70,10 @@ class AgentConfig(BaseModel):
                 "memory_store",
                 "memory_retrieve",
                 "memory_search",
+                "s3_memory_write",
+                "github_issue",
+                "github_pr",
+                "askcc_run",
             }
             return [t for t in available_tools if t in coding_tools]
         if self.tool_profile == ToolProfile.MESSAGING:

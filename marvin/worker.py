@@ -65,6 +65,7 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
     runner = AgentRunner(
         agent=envelope.agent,
         session_id=envelope.session_id,
+        s3_prefix=envelope.s3_context_prefix,
     )
     response_text, history = await runner.chat(
         envelope.user_message,
