@@ -70,6 +70,8 @@ class AgentConfig(BaseModel):
                 "memory_store",
                 "memory_retrieve",
                 "memory_search",
+                "github_issue",
+                "github_pr",
             }
             return [t for t in available_tools if t in coding_tools]
         if self.tool_profile == ToolProfile.MESSAGING:
