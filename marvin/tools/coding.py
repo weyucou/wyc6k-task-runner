@@ -276,7 +276,7 @@ class ExecTool(BaseTool):
                 error=f"Command exited with code {proc.returncode}.",
                 data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult.from_error(f"Command timed out after {timeout}s.")
         except OSError as exc:
             return ToolResult.from_error(f"Error executing command: {exc}")
@@ -913,6 +913,229 @@ class BrowserAutomationTool(BaseTool):
             return ToolResult.from_error(f"Browser error: {exc}")
 
 
+class GitHubIssueTool(BaseTool):
+    """Interact with GitHub issues via the gh CLI."""
+
+    name = "github_issue"
+    description = (
+        "View, comment on, label, or close a GitHub issue using the gh CLI. Requires GITHUB_TOKEN environment variable."
+    )
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action: 'view', 'comment', 'add_label', 'remove_label', 'close'.",
+            required=True,
+            enum=["view", "comment", "add_label", "remove_label", "close"],
+        ),
+        ToolParameter(
+            name="issue_url",
+            type="string",
+            description="Full URL of the GitHub issue (e.g. https://github.com/owner/repo/issues/1).",
+            required=True,
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="Comment body (required for action=comment).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="label",
+            type="string",
+            description="Label name (required for action=add_label or action=remove_label).",
+            required=False,
+            default="",
+        ),
+    ]
+
+    async def execute(
+        self,
+        action: str,
+        issue_url: str,
+        body: str = "",
+        label: str = "",
+    ) -> ToolResult:
+        """Execute a GitHub issue action via gh CLI."""
+        token = os.getenv("GITHUB_TOKEN", "")
+        if not token:
+            return ToolResult.from_error("GITHUB_TOKEN environment variable is not set")
+
+        env = {**os.environ, "GITHUB_TOKEN": token}
+
+        if action == "view":
+            cmd = ["gh", "issue", "view", issue_url]
+        elif action == "comment":
+            if not body:
+                return ToolResult.from_error("body is required for action=comment")
+            cmd = ["gh", "issue", "comment", issue_url, "--body", body]
+        elif action == "add_label":
+            if not label:
+                return ToolResult.from_error("label is required for action=add_label")
+            cmd = ["gh", "issue", "edit", issue_url, "--add-label", label]
+        elif action == "remove_label":
+            if not label:
+                return ToolResult.from_error("label is required for action=remove_label")
+            cmd = ["gh", "issue", "edit", issue_url, "--remove-label", label]
+        elif action == "close":
+            cmd = ["gh", "issue", "close", issue_url]
+        else:
+            return ToolResult.from_error(f"Unknown action: {action}")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            out = stdout.decode(errors="replace")
+            err = stderr.decode(errors="replace")
+            if proc.returncode == 0:
+                return ToolResult.success(
+                    output=out or f"Action '{action}' completed successfully.",
+                    data={"action": action, "issue_url": issue_url, "return_code": proc.returncode},
+                )
+            return ToolResult.from_error(
+                f"gh exited with code {proc.returncode}: {err}",
+                output=out,
+            )
+        except FileNotFoundError:
+            return ToolResult.from_error("'gh' CLI not found. Install the GitHub CLI to use this tool.")
+        except TimeoutError:
+            return ToolResult.from_error("gh command timed out")
+        except OSError as exc:
+            return ToolResult.from_error(f"Error running gh: {exc}")
+
+
+class GitHubPRTool(BaseTool):
+    """Interact with GitHub pull requests via the gh CLI."""
+
+    name = "github_pr"
+    description = (
+        "Create, view, or update a GitHub pull request using the gh CLI. Requires GITHUB_TOKEN environment variable."
+    )
+    require_approval = True
+    parameters = [
+        ToolParameter(
+            name="action",
+            type="string",
+            description="Action: 'create', 'view', 'update_body'.",
+            required=True,
+            enum=["create", "view", "update_body"],
+        ),
+        ToolParameter(
+            name="repo",
+            type="string",
+            description="Repository in owner/repo format (used with action=create).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="pr_url",
+            type="string",
+            description="Full URL or number of the PR (required for action=view or action=update_body).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="title",
+            type="string",
+            description="PR title (required for action=create).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="body",
+            type="string",
+            description="PR description body (used for action=create or action=update_body).",
+            required=False,
+            default="",
+        ),
+        ToolParameter(
+            name="base",
+            type="string",
+            description="Base branch for the PR (used with action=create). Defaults to 'main'.",
+            required=False,
+            default="main",
+        ),
+        ToolParameter(
+            name="head",
+            type="string",
+            description="Head branch for the PR (used with action=create). Defaults to current branch.",
+            required=False,
+            default="",
+        ),
+    ]
+
+    async def execute(
+        self,
+        action: str,
+        repo: str = "",
+        pr_url: str = "",
+        title: str = "",
+        body: str = "",
+        base: str = "main",
+        head: str = "",
+    ) -> ToolResult:
+        """Execute a GitHub PR action via gh CLI."""
+        token = os.getenv("GITHUB_TOKEN", "")
+        if not token:
+            return ToolResult.from_error("GITHUB_TOKEN environment variable is not set")
+
+        env = {**os.environ, "GITHUB_TOKEN": token}
+
+        if action == "create":
+            if not title:
+                return ToolResult.from_error("title is required for action=create")
+            cmd = ["gh", "pr", "create", "--title", title, "--base", base]
+            if body:
+                cmd += ["--body", body]
+            if head:
+                cmd += ["--head", head]
+            if repo:
+                cmd += ["--repo", repo]
+        elif action == "view":
+            if not pr_url:
+                return ToolResult.from_error("pr_url is required for action=view")
+            cmd = ["gh", "pr", "view", pr_url]
+        elif action == "update_body":
+            if not pr_url:
+                return ToolResult.from_error("pr_url is required for action=update_body")
+            cmd = ["gh", "pr", "edit", pr_url, "--body", body]
+        else:
+            return ToolResult.from_error(f"Unknown action: {action}")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            out = stdout.decode(errors="replace")
+            err = stderr.decode(errors="replace")
+            if proc.returncode == 0:
+                return ToolResult.success(
+                    output=out or f"Action '{action}' completed successfully.",
+                    data={"action": action, "return_code": proc.returncode},
+                )
+            return ToolResult.from_error(
+                f"gh exited with code {proc.returncode}: {err}",
+                output=out,
+            )
+        except FileNotFoundError:
+            return ToolResult.from_error("'gh' CLI not found. Install the GitHub CLI to use this tool.")
+        except TimeoutError:
+            return ToolResult.from_error("gh command timed out")
+        except OSError as exc:
+            return ToolResult.from_error(f"Error running gh: {exc}")
+
+
 def register_coding_tools(registry: Any) -> None:
     """Register all coding tools with the given registry.
 
@@ -932,6 +1155,8 @@ def register_coding_tools(registry: Any) -> None:
         SessionsSendTool(),
         ImageTool(),
         BrowserAutomationTool(),
+        GitHubIssueTool(),
+        GitHubPRTool(),
     ]
     for tool in tools:
         try:
