@@ -276,7 +276,7 @@ class ExecTool(BaseTool):
                 error=f"Command exited with code {proc.returncode}.",
                 data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ToolResult.from_error(f"Command timed out after {timeout}s.")
         except OSError as exc:
             return ToolResult.from_error(f"Error executing command: {exc}")

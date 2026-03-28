@@ -9,11 +9,9 @@ from marvin.tools.builtin import (
     CalculatorTool,
     DateTimeTool,
     MemorySearchTool,
-    MemoryStoreTool,
     WebSearchTool,
 )
 from marvin.tools.registry import ToolRegistry
-
 
 # ---- CalculatorTool ----
 
