@@ -13,6 +13,7 @@ from typing import Any
 import boto3
 
 from marvin.context import ContextBundleService
+from marvin.credentials import CredentialResolver
 from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
@@ -104,6 +105,8 @@ def poll_once(sqs: Any) -> None:
         try:
             body = json.loads(message["Body"])
             envelope = TaskEnvelope.model_validate(body)
+            resolver = CredentialResolver()
+            resolver.resolve(envelope)
             logger.info("Processing task_id=%s for customer=%s", envelope.task_id, envelope.customer_id)
 
             result = asyncio.run(process_envelope(envelope))
