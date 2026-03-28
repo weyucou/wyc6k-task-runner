@@ -70,6 +70,7 @@ class AgentConfig(BaseModel):
                 "memory_store",
                 "memory_retrieve",
                 "memory_search",
+                "s3_memory_write",
                 "github_issue",
                 "github_pr",
                 "askcc_run",

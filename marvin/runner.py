@@ -30,6 +30,7 @@ class AgentRunner:
         registry: ToolRegistry | None = None,
         register_builtins: bool = True,
         session_id: str | None = None,
+        s3_prefix: str | None = None,
     ) -> None:
         """Initialize the agent runner.
 
@@ -38,13 +39,14 @@ class AgentRunner:
             registry: Optional custom tool registry.
             register_builtins: Whether to register built-in tools.
             session_id: Optional session ID for memory search context.
+            s3_prefix: Optional S3 prefix for S3MemoryWriteTool registration.
         """
         self.agent = agent
         self.registry = registry or ToolRegistry()
         self._client = None
 
         if register_builtins:
-            register_builtin_tools(self.registry, session_id=session_id)
+            register_builtin_tools(self.registry, session_id=session_id, s3_prefix=s3_prefix)
 
     def get_client(self) -> Any:
         """Get or create the LLM client."""

@@ -1,6 +1,7 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from marvin.tools.builtin import (
     CalculatorTool,
     DateTimeTool,
     MemorySearchTool,
+    S3MemoryWriteTool,
     WebSearchTool,
 )
 from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool
@@ -468,3 +470,72 @@ class TestAskccRunTool:
             )
         _, kwargs = mock_wait.call_args
         assert kwargs.get("timeout") == custom_timeout
+
+
+# ---- S3MemoryWriteTool ----
+
+
+class TestS3MemoryWriteTool:
+    S3_PREFIX = "s3://test-bucket/customers/cust-1/projects/my-project"
+
+    def setup_method(self) -> None:
+        self.tool = S3MemoryWriteTool(s3_prefix=self.S3_PREFIX)
+
+    def test_parameters_defined(self) -> None:
+        assert any(p.name == "section_header" for p in self.tool.parameters)
+        assert any(p.name == "content" for p in self.tool.parameters)
+
+    def test_missing_section_header(self) -> None:
+        is_valid, error = self.tool.validate_params({"content": "some text"})
+        assert not is_valid
+        assert "section_header" in error
+
+    def test_missing_content(self) -> None:
+        is_valid, error = self.tool.validate_params({"section_header": "Observations"})
+        assert not is_valid
+        assert "content" in error
+
+    def test_valid_parameters(self) -> None:
+        is_valid, error = self.tool.validate_params({"section_header": "Observations", "content": "All good."})
+        assert is_valid
+        assert error is None
+
+    def test_execute_success(self) -> None:
+        with patch("marvin.context.ContextBundleService.push_memory") as mock_push:
+            result = asyncio.run(self.tool.execute(section_header="Observations", content="All good."))
+        assert result.status.value == "success"
+        assert "Observations" in result.output
+        mock_push.assert_called_once()
+
+    def test_execute_memory_entry_fields(self) -> None:
+        import datetime  # noqa: PLC0415
+
+        captured: list = []
+
+        def capture_push(s3_prefix: str, entry: Any) -> None:
+            captured.append((s3_prefix, entry))
+
+        with patch("marvin.context.ContextBundleService.push_memory", side_effect=capture_push):
+            asyncio.run(self.tool.execute(section_header="Decisions", content="We chose X."))
+
+        assert len(captured) == 1
+        prefix, entry = captured[0]
+        assert prefix == self.S3_PREFIX
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        assert entry.date == today
+        assert entry.filename == f"{today.isoformat()}.md"
+        assert "## Decisions" in entry.content
+        assert "We chose X." in entry.content
+
+    def test_execute_s3_error_propagated(self) -> None:
+        from botocore.exceptions import ClientError  # noqa: PLC0415
+
+        error_response = {"Error": {"Code": "NoSuchBucket", "Message": "bucket not found"}}
+        with patch(
+            "marvin.context.ContextBundleService.push_memory",
+            side_effect=ClientError(error_response, "PutObject"),
+        ):
+            result = asyncio.run(self.tool.execute(section_header="Test", content="data"))
+        assert result.status.value == "error"
+        assert result.error is not None
+        assert len(result.error) > 0
