@@ -75,7 +75,7 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 |----------|-------------|-------------|
 | `SQS_QUEUE_URL` | worker | SQS queue URL to poll for tasks |
 | `ZAATAR_SEARCH_API_URL` | `web_search` | Base URL of a deployed [zaatar-search-api](https://github.com/monkut/zaatar-search-api) instance (e.g. `http://localhost:5000`) |
-| `BRAVE_SEARCH_API_KEY` | `web_search` (coding profile) | Brave Search API key (fallback when `ZAATAR_SEARCH_API_URL` is unset) |
+| `BRAVE_SEARCH_API_KEY` | `RealWebSearchTool` (coding profile) | Brave Search API key for the coding-profile web search tool (`marvin/tools/coding.py`) |
 | `ANTHROPIC_API_KEY` | `image` | Anthropic API key for vision analysis |
 
 ### Optional Runtime Dependencies
