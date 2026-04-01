@@ -6,28 +6,102 @@ Org-wide conventions (coding style, error handling, branching, testing, tool pre
 
 ## Project Overview
 
-marvin-manager is the agent runtime of the WYC6k system. It provides the LLM harness, tool profiles, and SQS-based task dispatch that agent workers use to process tasks.
-
-The `marvin/` package is a pure-Python, stateless SQS worker (no Django). It dequeues `TaskEnvelope` messages from SQS, runs an LLM agent in a tool-call loop, and writes results back.
-
-For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).
+wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent harness. It provides a stateless SQS worker (`marvin/`) that dequeues `TaskEnvelope` messages, pulls per-customer context (CLAUDE.md, SOPs, memories) from S3, runs an LLM agent through a tool-call loop, and returns results. The worker supports multiple LLM providers (Anthropic, Gemini, Ollama, vLLM) and four tool profiles (MINIMAL, CODING, MESSAGING, FULL). Task scheduling and customer identity are managed by a separate service (`wyc6k-task-manager`). For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models replacing Django ORM |
-| `marvin/worker.py` | SQS consumer loop entry point (`python -m marvin`) |
-| `marvin/runner.py` | `AgentRunner` — orchestrates the tool-call loop |
-| `marvin/context.py` | `ContextBundleService` — pulls customer context (CLAUDE.md, SOPs, memories) from S3 |
+| `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — core Pydantic models |
+| `marvin/worker.py` | SQS consumer loop and `main()` entry point (`python -m marvin`) |
+| `marvin/__main__.py` | Module entry point — delegates to `worker.main()` |
+| `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop |
+| `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
-| `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter, keyed by agent name (str) |
-| `marvin/tools/builtin.py` | Core built-in tools; `MemorySearchTool` returns empty in stateless mode |
-| `marvin/tools/coding.py` | File I/O, shell, web fetch/search, browser, sub-agent session tools |
-| `tests/` | pytest tests for `marvin` (no Django test runner) |
-| `pyproject.toml` | Project config; Django and related deps have been removed |
+| `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
+| `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter, keyed by agent name (`str`) |
+| `marvin/tools/registry.py` | `ToolRegistry` — maps tool names to `BaseTool` instances; serialises for each provider |
+| `marvin/tools/builtin.py` | Built-in tools (`DateTimeTool`, `MemorySearchTool`); `MemorySearchTool` is a no-op in stateless mode |
+| `marvin/tools/coding.py` | File I/O, shell exec, web fetch/search, browser, sub-agent session tools |
+| `marvin/definitions.py` | S3 path length constants and enum base classes |
+| `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
+| `tests/` | pytest tests (no Django test runner) |
+| `pyproject.toml` | Project config; pure Python, no Django deps |
+
+## Architecture
+
+### Task processing flow
+
+```
+SQS message
+  → worker.poll_once()
+  → TaskEnvelope.model_validate(body)
+  → ContextBundleService.pull(s3_context_prefix)     # fetch CLAUDE.md, SOPs, README, memory
+  → AgentRunner(agent=AgentConfig, session_id=str)
+  → runner.chat(user_message, system_prompt=claude_md)
+      → generate() / generate_with_tools() loop (≤ max_tool_iterations)
+  → delete SQS message on success
+```
+
+### S3 context layout
+
+`TaskEnvelope.s3_context_prefix` points to a project directory within a per-customer root:
+
+```
+s3://bucket/{customer_id}/
+    CLAUDE.md                           # customer system prompt
+    sops/                               # customer SOPs (arbitrary .md files)
+    projects/{repo}/
+        README.md                       # project goals
+        MEMORY.md                       # memory index
+        memory/{year}/{date}.md         # daily memory entries
+```
+
+The agent's `system_prompt` field takes precedence over the S3 `CLAUDE.md` when set.
+
+### Tool profiles
+
+| Profile | Tools included |
+|---------|----------------|
+| `MINIMAL` | None — LLM text response only |
+| `CODING` | read, write, edit, apply_patch, exec, process, web_fetch, web_search, browser_fetch, sessions_spawn, sessions_send, image, memory_store/retrieve/search |
+| `MESSAGING` | Any registered tool whose name starts with: send, message, notify, email, slack, telegram |
+| `FULL` | All registered tools |
+
+Per-agent overrides: `tools_allow` adds extra tools; `tools_deny` removes tools from the profile set.
+
+### LLM providers
+
+| Provider | Notes |
+|----------|-------|
+| `anthropic` | Claude models via Anthropic API |
+| `gemini` | Google Gemini via Gemini API |
+| `ollama` | Local models via Ollama (OpenAI-compatible format) |
+| `vllm` | Self-hosted models via vLLM (OpenAI-compatible format) |
+
+## Development Commands
+
+```bash
+uv run pytest              # run tests
+uv run ruff check          # lint
+uv run ruff format         # format
+python -m marvin           # start the SQS worker
+```
+
+Key environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SQS_QUEUE_URL` | — | **Required.** SQS queue to poll |
+| `SQS_ENDPOINT_URL` | — | LocalStack override (`http://localhost:4566`) |
+| `S3_ENDPOINT_URL` | AWS regional endpoint | LocalStack override |
+| `AWS_DEFAULT_REGION` | `ap-northeast-1` | AWS region |
+| `POLL_INTERVAL_SECONDS` | `5` | Sleep between polls |
+| `VISIBILITY_TIMEOUT` | `300` | SQS message visibility timeout (seconds) |
+| `MAX_MESSAGES` | `1` | Messages per SQS receive call |
 
 ## Do Not
 
 - Do not add Django, psycopg, or DRF dependencies to `marvin/`.
-- The `RateLimiterRegistry` in `marvin/rate_limiter.py` uses `str` keys (agent names), not `int` (DB IDs).
+- `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
+- Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
