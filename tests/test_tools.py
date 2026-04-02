@@ -12,7 +12,7 @@ from marvin.tools.builtin import (
     MemorySearchTool,
     WebSearchTool,
 )
-from marvin.tools.coding import GitHubIssueTool, GitHubPRTool
+from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool
 from marvin.tools.registry import ToolRegistry
 
 # ---- CalculatorTool ----
@@ -378,3 +378,93 @@ class TestGitHubPRTool:
                 result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
         assert result.error is not None
         assert "gh exited with code 1" in result.error
+
+
+# ---- AskccRunTool ----
+
+
+class TestAskccRunTool:
+    def setup_method(self) -> None:
+        self.tool = AskccRunTool()
+
+    def test_require_approval_is_true(self) -> None:
+        assert self.tool.require_approval is True
+
+    def test_missing_required_action(self) -> None:
+        is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
+        assert not is_valid
+        assert "action" in error
+
+    def test_missing_required_issue_url(self) -> None:
+        is_valid, error = self.tool.validate_params({"action": "prepare"})
+        assert not is_valid
+        assert "issue_url" in error
+
+    def test_invalid_action_enum(self) -> None:
+        is_valid, error = self.tool.validate_params(
+            {"action": "deploy", "issue_url": "https://github.com/o/r/issues/1"}
+        )
+        assert not is_valid
+        assert "must be one of" in error.lower()
+
+    def test_valid_params_each_action(self) -> None:
+        for action in ("prepare", "develop", "review", "diagnose", "explore", "plan"):
+            is_valid, error = self.tool.validate_params(
+                {"action": action, "issue_url": "https://github.com/o/r/issues/1"}
+            )
+            assert is_valid, f"action={action} should be valid, got error: {error}"
+            assert error is None
+
+    def test_missing_askcc_cli_returns_error(self) -> None:
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
+            result = asyncio.run(self.tool.execute(action="prepare", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "'askcc' CLI not found" in result.error
+
+    def test_nonzero_exit_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate = AsyncMock(return_value=(b"", b"something went wrong"))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is not None
+        assert "askcc exited with code 1" in result.error
+
+    def test_success(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="plan", issue_url="https://github.com/o/r/issues/1"))
+        assert result.error is None
+        assert "done" in result.output
+
+    def test_timeout_terminates_process_and_returns_error(self) -> None:
+        mock_proc = MagicMock()
+        mock_proc.returncode = None
+        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
+        mock_proc.wait = AsyncMock(return_value=None)
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
+        mock_proc.terminate.assert_called_once()
+        assert result.error is not None
+        assert "timed out" in result.error
+
+    def test_config_timeout_override(self) -> None:
+        custom_timeout = 600
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        with (
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait,
+        ):
+            asyncio.run(
+                self.tool.execute(
+                    action="review",
+                    issue_url="https://github.com/o/r/issues/1",
+                    config={"timeout": custom_timeout},
+                )
+            )
+        _, kwargs = mock_wait.call_args
+        assert kwargs.get("timeout") == custom_timeout
