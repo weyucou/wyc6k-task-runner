@@ -30,54 +30,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 
 ## Architecture
 
-### Task processing flow
-
-```
-SQS message
-  → worker.poll_once()
-  → TaskEnvelope.model_validate(body)
-  → ContextBundleService.pull(s3_context_prefix)     # fetch CLAUDE.md, SOPs, README, memory
-  → AgentRunner(agent=AgentConfig, session_id=str)
-  → runner.chat(user_message, system_prompt=claude_md)
-      → generate() / generate_with_tools() loop (≤ max_tool_iterations)
-  → delete SQS message on success
-```
-
-### S3 context layout
-
-`TaskEnvelope.s3_context_prefix` points to a project directory within a per-customer root:
-
-```
-s3://bucket/{customer_id}/
-    CLAUDE.md                           # customer system prompt
-    sops/                               # customer SOPs (arbitrary .md files)
-    projects/{repo}/
-        README.md                       # project goals
-        MEMORY.md                       # memory index
-        memory/{year}/{date}.md         # daily memory entries
-```
-
-The agent's `system_prompt` field takes precedence over the S3 `CLAUDE.md` when set.
-
-### Tool profiles
-
-| Profile | Tools included |
-|---------|----------------|
-| `MINIMAL` | None — LLM text response only |
-| `CODING` | read, write, edit, apply_patch, exec, process, web_fetch, web_search, browser_fetch, sessions_spawn, sessions_send, image, memory_store/retrieve/search |
-| `MESSAGING` | Any registered tool whose name starts with: send, message, notify, email, slack, telegram |
-| `FULL` | All registered tools |
-
-Per-agent overrides: `tools_allow` adds extra tools; `tools_deny` removes tools from the profile set.
-
-### LLM providers
-
-| Provider | Notes |
-|----------|-------|
-| `anthropic` | Claude models via Anthropic API |
-| `gemini` | Google Gemini via Gemini API |
-| `ollama` | Local models via Ollama (OpenAI-compatible format) |
-| `vllm` | Self-hosted models via vLLM (OpenAI-compatible format) |
+See [weyucou/wyc6k-spec — Architecture](https://github.com/weyucou/wyc6k-spec/blob/main/docs/architecture.md) for system-wide design, task processing flow, S3 context layout, tool profiles, and LLM provider details.
 
 ## Development Commands
 
