@@ -920,7 +920,7 @@ class GitHubIssueTool(BaseTool):
     description = (
         "View, comment on, label, or close a GitHub issue using the gh CLI. Requires GITHUB_TOKEN environment variable."
     )
-    require_approval = True
+    require_approval = False
     parameters = [
         ToolParameter(
             name="action",
@@ -1018,7 +1018,7 @@ class GitHubPRTool(BaseTool):
     description = (
         "Create, view, or update a GitHub pull request using the gh CLI. Requires GITHUB_TOKEN environment variable."
     )
-    require_approval = True
+    require_approval = False
     parameters = [
         ToolParameter(
             name="action",

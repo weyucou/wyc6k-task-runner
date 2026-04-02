@@ -230,8 +230,8 @@ class TestGitHubIssueTool:
     def setup_method(self) -> None:
         self.tool = GitHubIssueTool()
 
-    def test_require_approval_is_true(self) -> None:
-        assert self.tool.require_approval is True
+    def test_require_approval_is_false(self) -> None:
+        assert self.tool.require_approval is False
 
     def test_missing_required_action(self) -> None:
         is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
@@ -311,8 +311,8 @@ class TestGitHubPRTool:
     def setup_method(self) -> None:
         self.tool = GitHubPRTool()
 
-    def test_require_approval_is_true(self) -> None:
-        assert self.tool.require_approval is True
+    def test_require_approval_is_false(self) -> None:
+        assert self.tool.require_approval is False
 
     def test_missing_required_action(self) -> None:
         is_valid, error = self.tool.validate_params({"pr_url": "https://github.com/o/r/pull/1"})
