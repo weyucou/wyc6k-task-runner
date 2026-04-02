@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from marvin.context import CustomerContextBundle
 from marvin.llm import LLMMessage, LLMResponse
 from marvin.llm.factory import create_client_from_agent_config
 from marvin.models import AgentConfig
@@ -11,6 +12,22 @@ from marvin.tools import ToolRegistry
 from marvin.tools.builtin import register_builtin_tools
 
 logger = logging.getLogger(__name__)
+
+
+def _build_context_prefix(bundle: CustomerContextBundle) -> str:
+    """Build a markdown context block from the fields of a CustomerContextBundle.
+
+    Includes claude_md, sops (each file as a subsection), and project_goals.
+    """
+    parts = []
+    if bundle.claude_md:
+        parts.append(f"# CLAUDE.md\n\n{bundle.claude_md}")
+    if bundle.sops:
+        sops_sections = "\n\n".join(f"## {filename}\n\n{content}" for filename, content in bundle.sops.items())
+        parts.append(f"# Standard Operating Procedures\n\n{sops_sections}")
+    if bundle.project_goals:
+        parts.append(f"# Project Goals\n\n{bundle.project_goals}")
+    return "\n\n".join(parts)
 
 
 class AgentRunner:
@@ -30,6 +47,7 @@ class AgentRunner:
         registry: ToolRegistry | None = None,
         register_builtins: bool = True,
         session_id: str | None = None,
+        context_bundle: CustomerContextBundle | None = None,
     ) -> None:
         """Initialize the agent runner.
 
@@ -38,10 +56,14 @@ class AgentRunner:
             registry: Optional custom tool registry.
             register_builtins: Whether to register built-in tools.
             session_id: Optional session ID for memory search context.
+            context_bundle: Optional customer context bundle; when set, its
+                claude_md, sops, and project_goals are prepended to every
+                system prompt passed to run().
         """
         self.agent = agent
         self.registry = registry or ToolRegistry()
         self._client = None
+        self.context_bundle = context_bundle
 
         if register_builtins:
             register_builtin_tools(self.registry, session_id=session_id)
@@ -125,6 +147,11 @@ class AgentRunner:
         prompt = system_prompt
         if prompt is None and self.agent:
             prompt = self.agent.system_prompt or None
+
+        if self.context_bundle is not None:
+            prefix = _build_context_prefix(self.context_bundle)
+            if prefix:
+                prompt = f"{prefix}\n\n{prompt}" if prompt else prefix
 
         tools = None
         if enable_tools and self.registry.list_tools():

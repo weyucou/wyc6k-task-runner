@@ -122,3 +122,4 @@ class ContextBundleService:
             ContentType="text/markdown",
         )
         logger.info("Wrote memory entry to s3://%s/%s", bucket, memory_key)
+
