@@ -1,0 +1,4 @@
+import os
+
+AWS_DEFAULT_REGION: str = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")
+SECRETS_MANAGER_ENDPOINT_URL: str = os.getenv("SECRETS_MANAGER_ENDPOINT_URL", "")
