@@ -6,11 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from marvin.context import CustomerContextBundle
 from marvin.llm.base import LLMMessage, LLMResponse, StopReason
-from marvin.models import AgentConfig, LLMProvider, ToolProfile
-from marvin.runner import AgentRunner
+from marvin.models import AgentConfig, LLMProvider
+from marvin.runner import AgentRunner, _build_context_prefix
 from marvin.tools import ToolRegistry
-from marvin.tools.base import ToolResult
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -141,9 +141,7 @@ class TestAgentRunnerChat:
         runner = AgentRunner(agent=agent, register_builtins=False)
         mock_client = self._patch_client(runner)
 
-        asyncio.run(
-            runner.chat("Hi", system_prompt="Override prompt.", enable_tools=False)
-        )
+        asyncio.run(runner.chat("Hi", system_prompt="Override prompt.", enable_tools=False))
 
         call_kwargs = mock_client.generate.call_args[1]
         assert call_kwargs.get("system_prompt") == "Override prompt."
@@ -155,3 +153,108 @@ class TestAgentRunnerChat:
 
         # Should complete without blocking
         asyncio.run(runner.chat("Hi", enable_tools=False))
+
+
+def _make_bundle(**kwargs: Any) -> CustomerContextBundle:
+    defaults = {
+        "customer_id": "acme",
+        "claude_md": "# Claude Config\n\nBe helpful.",
+        "sops": {"deploy.md": "# Deploy SOP\n\nStep 1: push."},
+        "project_goals": "# Goals\n\nShip fast.",
+        "memory_index": "",
+        "daily_memories": [],
+    }
+    defaults.update(kwargs)
+    return CustomerContextBundle(**defaults)
+
+
+class TestBuildContextPrefix:
+    def test_includes_claude_md(self) -> None:
+        bundle = _make_bundle(sops={}, project_goals="")
+        prefix = _build_context_prefix(bundle)
+        assert "# CLAUDE.md" in prefix
+        assert "Be helpful." in prefix
+
+    def test_includes_each_sop_file(self) -> None:
+        bundle = _make_bundle(sops={"a.md": "Content A", "b.md": "Content B"})
+        prefix = _build_context_prefix(bundle)
+        assert "## a.md" in prefix
+        assert "Content A" in prefix
+        assert "## b.md" in prefix
+        assert "Content B" in prefix
+
+    def test_includes_project_goals(self) -> None:
+        bundle = _make_bundle()
+        prefix = _build_context_prefix(bundle)
+        assert "# Project Goals" in prefix
+        assert "Ship fast." in prefix
+
+    def test_empty_fields_omitted(self) -> None:
+        bundle = _make_bundle(claude_md="", sops={}, project_goals="")
+        prefix = _build_context_prefix(bundle)
+        assert prefix == ""
+
+
+class TestAgentRunnerContextBundle:
+    def _patch_client(self, runner: AgentRunner, response_content: str = "OK") -> MagicMock:
+        mock_client = MagicMock()
+        mock_response = _make_response(response_content)
+        mock_client.generate = AsyncMock(return_value=mock_response)
+        mock_client.generate_with_tools = AsyncMock(
+            return_value=(mock_response, [LLMMessage.user("Hi"), LLMMessage.assistant(response_content)])
+        )
+        runner._client = mock_client
+        return mock_client
+
+    def test_with_bundle_prefix_prepended_to_system_prompt(self) -> None:
+        agent = _make_agent(system_prompt="You are an assistant.")
+        bundle = _make_bundle()
+        runner = AgentRunner(agent=agent, register_builtins=False, context_bundle=bundle)
+        mock_client = self._patch_client(runner)
+
+        asyncio.run(runner.chat("Hi", enable_tools=False))
+
+        call_kwargs = mock_client.generate.call_args[1]
+        prompt = call_kwargs.get("system_prompt", "")
+        assert "# CLAUDE.md" in prompt
+        assert "# Project Goals" in prompt
+        assert "You are an assistant." in prompt
+        # prefix comes before the original prompt
+        assert prompt.index("# CLAUDE.md") < prompt.index("You are an assistant.")
+
+    def test_without_bundle_no_regression(self) -> None:
+        agent = _make_agent(system_prompt="You are an assistant.")
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        mock_client = self._patch_client(runner)
+
+        asyncio.run(runner.chat("Hi", enable_tools=False))
+
+        call_kwargs = mock_client.generate.call_args[1]
+        assert call_kwargs.get("system_prompt") == "You are an assistant."
+
+    def test_with_bundle_and_explicit_system_prompt_combined(self) -> None:
+        agent = _make_agent(system_prompt="Agent default.")
+        bundle = _make_bundle()
+        runner = AgentRunner(agent=agent, register_builtins=False, context_bundle=bundle)
+        mock_client = self._patch_client(runner)
+
+        asyncio.run(runner.chat("Hi", system_prompt="Explicit override.", enable_tools=False))
+
+        call_kwargs = mock_client.generate.call_args[1]
+        prompt = call_kwargs.get("system_prompt", "")
+        assert "# CLAUDE.md" in prompt
+        assert "Explicit override." in prompt
+        # prefix before the explicit override
+        assert prompt.index("# CLAUDE.md") < prompt.index("Explicit override.")
+
+    def test_with_bundle_no_system_prompt_uses_prefix_only(self) -> None:
+        agent = _make_agent()
+        bundle = _make_bundle(sops={}, project_goals="")
+        runner = AgentRunner(agent=agent, register_builtins=False, context_bundle=bundle)
+        mock_client = self._patch_client(runner)
+
+        asyncio.run(runner.run([LLMMessage.user("Hi")], enable_tools=False))
+
+        call_kwargs = mock_client.generate.call_args[1]
+        prompt = call_kwargs.get("system_prompt", "")
+        assert "# CLAUDE.md" in prompt
