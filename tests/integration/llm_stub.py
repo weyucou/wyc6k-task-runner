@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Scripted OpenAI-compatible chat-completions server for the integration tests.
 
 The agent under test reaches this server through the real `OpenAIClient`

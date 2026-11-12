@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Control-plane stand-in used only by the integration tests.
 
 Routing a `TaskEnvelope` from SQS to Lambda / Fargate / Batch belongs to
