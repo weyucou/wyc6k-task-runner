@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 class LLMProvider(StrEnum):
     ANTHROPIC = "anthropic"
+    BEDROCK = "bedrock"  # Claude on Amazon Bedrock; model_name is the Bedrock model ID
     GEMINI = "gemini"
     OLLAMA = "ollama"
     VLLM = "vllm"

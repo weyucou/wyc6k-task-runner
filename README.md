@@ -91,7 +91,18 @@ until curl -fs http://localhost:4566/_localstack/health > /dev/null; do sleep 1;
 
 Until step 4 creates the queue, the launcher logs `SQS call failed; retrying` every `POLL_INTERVAL_SECONDS`. If `up` fails with `port is already allocated`, another container (often another project's LocalStack) holds port 4566; stop it first.
 
+To use Claude on [Amazon Bedrock](#running-with-amazon-bedrock) instead of the Anthropic API, export these instead of `ANTHROPIC_API_KEY`, then run `up`:
+
+```bash
+aws sso login --profile your-bedrock-profile  # SSO profiles: the agent container cannot refresh the token
+export BEDROCK_AWS_PROFILE=your-bedrock-profile  # a profile allowed bedrock-mantle:CreateInference
+export BEDROCK_AWS_REGION=us-west-2
+export DOCKER_AWS_CONFIG_DIR=$HOME/.aws  # an absolute host path: the launcher container cannot expand `~`
+```
+
 **4. Run a test task**
+
+For Bedrock, set the envelope's `agent` to `{"name": "local-agent", "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5", "tool_profile": "minimal"}`.
 
 ```bash
 # Create the queue and the customer context in LocalStack
@@ -162,14 +173,49 @@ Ctrl-C stops this launcher **and interrupts the running agent**. The terminal se
 | `POLL_INTERVAL_SECONDS` | `5` | Back-off after an SQS error |
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image to run (compose sets `weyucou/agent-worker:local`) |
 | `DOCKER_NETWORK` | — | `docker run --network`, e.g. `wade_default` to reach `localstack:4566` |
-| `DOCKER_AWS_CONFIG_DIR` | — | Host dir mounted read-only at `/root/.aws`, for `AWS_PROFILE` |
+| `DOCKER_AWS_CONFIG_DIR` | — | Host dir mounted read-only at `/root/.aws`, for `AWS_PROFILE` and `BEDROCK_AWS_PROFILE` |
 | `DOCKER_ENV_PASSTHROUGH` | — | Extra comma-separated env var names to forward to the container |
 | `ECS_CLUSTER`, `ECS_TASK_DEFINITION` | — | Required for `ecs` |
 | `ECS_SUBNETS`, `ECS_SECURITY_GROUPS` | — | Required for `ecs`; comma-separated (awsvpc) |
 | `ECS_ASSIGN_PUBLIC_IP` | `DISABLED` | `ENABLED` or `DISABLED` |
 | `ECS_CONTAINER_NAME` | `agent-worker` | Container that receives the override |
 
-The docker backend always forwards `TASK_ENVELOPE_JSON` and `CUSTOMER_ID`, plus these when set: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `S3_ENDPOINT_URL`, `SECRETS_MANAGER_ENDPOINT_URL`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `ENVIRONMENT` (`marvin/launchers/docker.py`).
+The docker backend always forwards `TASK_ENVELOPE_JSON` and `CUSTOMER_ID`, plus these when set: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_DEFAULT_REGION`, `BEDROCK_AWS_REGION`, `BEDROCK_AWS_PROFILE`, `S3_ENDPOINT_URL`, `SECRETS_MANAGER_ENDPOINT_URL`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `ENVIRONMENT` (`marvin/launchers/docker.py`). `AWS_BEARER_TOKEN_BEDROCK` is not forwarded (see [Running with Amazon Bedrock](#running-with-amazon-bedrock)).
+
+## Running with Amazon Bedrock
+
+An envelope with `"provider": "bedrock"` runs Claude through Amazon Bedrock. The tool-call loop, requests and responses are those of the `anthropic` provider; `BedrockClient` (`marvin/llm/bedrock_client.py`) sends them to the Bedrock Mantle endpoint, `https://bedrock-mantle.<region>.api.aws/anthropic`, signed with AWS credentials. No Anthropic API key is read or sent, and `agent.base_url` is ignored.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BEDROCK_AWS_REGION` | `AWS_REGION`, then `AWS_DEFAULT_REGION` | Bedrock region, separate from the S3/SQS region |
+| `BEDROCK_AWS_PROFILE` | default AWS credential chain | AWS profile used only for Bedrock. Env credentials are ignored when it is set, so it works next to LocalStack's `test` keys |
+
+- **Model**: set `agent.model_name` to the Bedrock model ID, e.g. `anthropic.claude-sonnet-5-5`: provider prefix, no `global.`/`us.` geography prefix (the region selects the endpoint). The default `claude-sonnet-5-5` is an Anthropic API ID, which Bedrock rejects.
+- **IAM**: the credentials need `bedrock-mantle:CreateInference`. The ECS task role gets it from weyucou/wyc6k-infra#26.
+- **Model access**: the AWS account must have accepted Anthropic's model agreement in the Bedrock console (Model access). Until it has, Mantle answers `404 The model '…' does not exist` or `403 … is not available for this account`, and `aws bedrock get-foundation-model-availability --model-id anthropic.claude-sonnet-5-5` reports `agreementAvailability: NOT_AVAILABLE`.
+- **Credentials**: the default AWS credential chain, i.e. the ECS task role on Fargate, or env credentials or a profile locally. With none, the task exits `1` before any request.
+- **Bedrock API keys**: if `AWS_BEARER_TOKEN_BEDROCK` (or `ANTHROPIC_AWS_API_KEY`) is set in the agent's environment and `BEDROCK_AWS_PROFILE` is not, the SDK sends it as a bearer token in place of IAM signing.
+- **Limitation**: the `image` tool still calls the Anthropic API and needs `ANTHROPIC_API_KEY`.
+
+One-shot test run, with LocalStack and the customer context from [step 4](#setup-and-run-on-ubuntu-linux) of the walkthrough:
+
+```bash
+export S3_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
+export BEDROCK_AWS_PROFILE=your-bedrock-profile BEDROCK_AWS_REGION=us-west-2
+export TASK_ENVELOPE_JSON='{
+  "task_id": "bedrock-001",
+  "customer_id": "cust-001",
+  "session_id": "local",
+  "agent": {"name": "bedrock-agent", "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5", "tool_profile": "minimal"},
+  "s3_context_prefix": "s3://local-context/customers/cust-001/projects/demo",
+  "user_message": "Reply with one short sentence.",
+  "enable_tools": false
+}'
+uv run python entrypoint.py; echo "exit=$?"
+```
+
+Exit `0` alone does not prove the call worked: an API error, such as a wrong model ID or a missing IAM permission, comes back as an `Error: ...` reply and the task still exits `0`. Check the reply in today's memory entry (step 4).
 
 ## Requirements
 
@@ -258,7 +304,7 @@ uv run pyright
 wyc6k-task-runner/
 ├── marvin/                 # Stateless SQS worker
 │   ├── launchers/          # SQS → one agent-worker container per envelope (docker | ecs)
-│   ├── llm/                # LLM clients (Anthropic, Gemini, OpenAI, Ollama)
+│   ├── llm/                # LLM clients (Anthropic, Bedrock, Gemini, OpenAI, Ollama)
 │   ├── tools/              # Tool base classes, registry, built-in and coding tools
 │   ├── models.py           # Pydantic models (AgentConfig, TaskEnvelope)
 │   ├── runner.py           # AgentRunner — tool-call loop

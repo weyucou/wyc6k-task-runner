@@ -17,12 +17,15 @@ DEFAULT_IMAGE = "weyucou/agent-worker:latest"
 CONTAINER_AWS_CONFIG_DIR = "/root/.aws"  # the agent-worker image runs as root
 
 # Launcher env vars forwarded to the container when set (non-empty).
+# AWS_BEARER_TOKEN_BEDROCK is left out on purpose: in the container it would replace IAM auth for Bedrock.
 DEFAULT_ENV_PASSTHROUGH = (
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
     "AWS_PROFILE",
     "AWS_DEFAULT_REGION",
+    "BEDROCK_AWS_REGION",
+    "BEDROCK_AWS_PROFILE",
     "S3_ENDPOINT_URL",
     "SECRETS_MANAGER_ENDPOINT_URL",
     "ANTHROPIC_API_KEY",

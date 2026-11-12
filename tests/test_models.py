@@ -135,3 +135,16 @@ class TestTaskEnvelope:
         assert envelope.task_id == "t-002"
         assert len(envelope.conversation_history) == 1
         assert isinstance(envelope.agent, AgentConfig)
+
+    def test_bedrock_provider_validates(self) -> None:
+        data = {
+            "task_id": "t-003",
+            "customer_id": "c-003",
+            "session_id": "s-003",
+            "agent": {"name": "agent", "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5"},
+            "s3_context_prefix": "s3://bucket/prefix",
+            "user_message": "Test",
+        }
+        envelope = TaskEnvelope.model_validate(data)
+        assert envelope.agent.provider == "bedrock"
+        assert envelope.agent.model_name == "anthropic.claude-sonnet-5-5"

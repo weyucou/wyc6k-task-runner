@@ -97,7 +97,7 @@ class AgentRunner:
         """
         provider_lower = provider.lower()
 
-        if provider_lower == "anthropic":
+        if provider_lower in ("anthropic", "bedrock"):
             return self.registry.to_anthropic_tools()
         if provider_lower in ("openai", "vllm"):
             return self.registry.to_openai_tools()

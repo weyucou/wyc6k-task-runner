@@ -21,10 +21,10 @@ def create_llm_client(
     """Create an LLM client for the specified provider.
 
     Args:
-        provider: The LLM provider (anthropic, gemini, ollama, vllm).
-        api_key: API key for authentication.
-        base_url: Base URL for the API.
-        model: Model name to use.
+        provider: The LLM provider (anthropic, bedrock, gemini, ollama, vllm).
+        api_key: API key for authentication. Not used by bedrock (AWS credentials).
+        base_url: Base URL for the API. Not used by bedrock.
+        model: Model name to use; for bedrock, the Bedrock model ID.
         **kwargs: Additional provider-specific options.
 
     Returns:
@@ -48,6 +48,12 @@ def create_llm_client(
             model=model,
             **kwargs,
         )
+
+    if provider_str == LLMProvider.BEDROCK.value:
+        # AWS credentials authenticate; api_key and base_url are Anthropic API settings and are dropped.
+        from marvin.llm.bedrock_client import BedrockClient  # noqa: PLC0415
+
+        return BedrockClient(model=model, **kwargs)
 
     if provider_str == LLMProvider.GEMINI.value:
         from marvin.llm.gemini_client import GeminiClient  # noqa: PLC0415

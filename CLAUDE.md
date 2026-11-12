@@ -6,7 +6,7 @@ Org-wide conventions (coding style, error handling, branching, testing, tool pre
 
 ## Project Overview
 
-wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent harness. It provides a stateless SQS worker (`marvin/`) that dequeues `TaskEnvelope` messages, pulls per-customer context (CLAUDE.md, SOPs, memories) from S3, runs an LLM agent through a tool-call loop, and returns results. The worker supports multiple LLM providers (Anthropic, Gemini, Ollama, vLLM) and four tool profiles (MINIMAL, CODING, MESSAGING, FULL). Task scheduling and customer identity are managed by a separate service (`wyc6k-task-manager`). For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).
+wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent harness. It provides a stateless SQS worker (`marvin/`) that dequeues `TaskEnvelope` messages, pulls per-customer context (CLAUDE.md, SOPs, memories) from S3, runs an LLM agent through a tool-call loop, and returns results. The worker supports multiple LLM providers (Anthropic, Claude on Amazon Bedrock, Gemini, Ollama, vLLM) and four tool profiles (MINIMAL, CODING, MESSAGING, FULL). Task scheduling and customer identity are managed by a separate service (`wyc6k-task-manager`). For system-wide design, see [weyucou/wyc6k-spec](https://github.com/weyucou/wyc6k-spec).
 
 ## Key Files
 
@@ -21,7 +21,8 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop |
 | `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
-| `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
+| `marvin/llm/` | LLM client implementations: Anthropic, Bedrock, Gemini, Ollama, OpenAI/vLLM |
+| `marvin/llm/bedrock_client.py` | `BedrockClient(AnthropicClient)` — Claude via the Bedrock Mantle endpoint, AWS credentials; overrides `_get_client()` only and never sends `api_key` |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter, keyed by agent name (`str`) |
 | `marvin/tools/registry.py` | `ToolRegistry` — maps tool names to `BaseTool` instances; serialises for each provider |
 | `marvin/tools/builtin.py` | Built-in tools (`DateTimeTool`, `MemorySearchTool`); `MemorySearchTool` is a no-op in stateless mode |
@@ -57,6 +58,8 @@ Key environment variables:
 | `POLL_INTERVAL_SECONDS` | `5` | Sleep between polls |
 | `VISIBILITY_TIMEOUT` | `300` | SQS message visibility timeout (seconds) |
 | `MAX_MESSAGES` | `1` | Messages per SQS receive call |
+| `BEDROCK_AWS_REGION` | `AWS_REGION`, then `AWS_DEFAULT_REGION` | Bedrock region for `provider: bedrock` |
+| `BEDROCK_AWS_PROFILE` | default credential chain | AWS profile used only for Bedrock (ignores env credentials, e.g. LocalStack's) |
 | `COMPUTE_BACKEND` | `docker` | Launcher backend: `docker` or `ecs`; anything else fails fast |
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
 | `DOCKER_NETWORK` | — | `docker run --network` (compose: `wade_default`) |
