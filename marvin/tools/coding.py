@@ -760,7 +760,7 @@ class ImageTool(BaseTool):
                 }
             ],
         )
-        return message.content[0].text
+        return "".join(block.text for block in message.content if block.type == "text")
 
 
 class BrowserAutomationTool(BaseTool):

@@ -15,7 +15,7 @@ from marvin.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-3.6-flash"
 
 
 class GeminiClient(BaseLLMClient):
@@ -202,6 +202,9 @@ class GeminiClient(BaseLLMClient):
         if stop_sequences:
             config["stop_sequences"] = stop_sequences
 
+        if tools:
+            config["tools"] = self._convert_tools(tools)
+
         # Convert messages
         contents = self._convert_messages(messages)
 
@@ -211,9 +214,6 @@ class GeminiClient(BaseLLMClient):
             "contents": contents,
             "config": config,
         }
-
-        if tools:
-            request_kwargs["tools"] = self._convert_tools(tools)
 
         try:
             response = await client.aio.models.generate_content(**request_kwargs)
