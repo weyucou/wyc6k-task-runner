@@ -10,7 +10,7 @@ class TestAgentConfig:
     def test_defaults(self) -> None:
         agent = AgentConfig(name="test-agent")
         assert agent.provider == LLMProvider.ANTHROPIC
-        assert agent.model_name == "claude-sonnet-4-20250514"
+        assert agent.model_name == "claude-sonnet-5-5"
         assert agent.temperature == 0.7
         assert agent.max_tokens == 4096
         assert agent.is_active is True
@@ -124,7 +124,7 @@ class TestTaskEnvelope:
             "agent": {
                 "name": "agent",
                 "provider": "anthropic",
-                "model_name": "claude-sonnet-4-20250514",
+                "model_name": "claude-sonnet-5-5",
             },
             "s3_context_prefix": "s3://bucket/prefix",
             "user_message": "Test",

@@ -88,7 +88,7 @@ AWS_REGION=us-west-2                      # ECR repo region
 SHORT_SHA=$(git rev-parse --short HEAD)
 ECR_URI=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/weyucou/agent-worker
 
-# 1. Build (multi-stage, fargate dep-group, ~349 MB)
+# 1. Build (multi-stage, fargate dep-group, ~390 MB)
 docker buildx build --platform linux/amd64 \
   -t weyucou/agent-worker:local \
   -t ${ECR_URI}:latest \

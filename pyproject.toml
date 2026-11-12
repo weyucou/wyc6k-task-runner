@@ -17,18 +17,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "pydantic<3.0",
+    "pydantic>=2.14.3,<3.0",
     # LLM providers
-    "anthropic>=0.40.0",
-    "google-genai>=1.0.0",
-    "ollama>=0.4.0",
-    "openai>=1.50.0",  # For vLLM OpenAI-compatible API
-    "httpx>=0.27.0",  # HTTP client for validations
-    "boto3>=1.35.0",  # AWS S3 access for SOP sync
-    "structlog>=24.0.0",  # Structured JSON logging
-    # Vector search for memory
-    "sentence-transformers>=3.0.0",
-    "numpy>=2.0.0",
+    "anthropic>=2.8.0",
+    "google-genai>=3.2.0",
+    "ollama>=0.6.3",
+    "openai>=3.49.0",  # For vLLM OpenAI-compatible API
+    "httpx>=0.27.0",  # Direct import in marvin/tools/builtin.py (anthropic, openai, google-genai now use httpx2)
+    "boto3>=1.44.1",  # AWS S3 access for SOP sync
+    "structlog>=26.1.0",  # Structured JSON logging
 ]
 
 [project.urls]
@@ -36,27 +33,25 @@ Repository = "https://github.com/monkut/marvin-manager"
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.396",
-    "ruff>=0.9.10",
+    "pyright>=1.1.414",
+    "ruff>=0.17.4",
     "unittest-xml-reporting>=3.2.0",
-    "poethepoet>=0.34.0",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=0.23.0",
+    "poethepoet>=0.49.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1",
     "moto>=5.2.5",
 ]
-# Runtime deps for the Fargate one-shot worker (entrypoint.py).
-# Excludes sentence-transformers / numpy (and their transitive torch + triton)
-# which are listed in [project.dependencies] for the long-lived SQS worker
-# memory vector-search path but are never imported on the Fargate path.
+# Runtime deps for the Fargate one-shot worker (entrypoint.py); the Dockerfile
+# installs only this group. Mirrors [project.dependencies] — keep constraints identical.
 fargate = [
-    "pydantic<3.0",
-    "anthropic>=0.40.0",
-    "google-genai>=1.0.0",
-    "ollama>=0.4.0",
-    "openai>=1.50.0",
+    "pydantic>=2.14.3,<3.0",
+    "anthropic>=2.8.0",
+    "google-genai>=3.2.0",
+    "ollama>=0.6.3",
+    "openai>=3.49.0",
     "httpx>=0.27.0",
-    "boto3>=1.35.0",
-    "structlog>=24.0.0",
+    "boto3>=1.44.1",
+    "structlog>=26.1.0",
 ]
 
 [build-system]

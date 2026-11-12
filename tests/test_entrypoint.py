@@ -15,7 +15,7 @@ def _make_envelope_dict(**kwargs) -> dict:
         "agent": {
             "name": "test-agent",
             "provider": "anthropic",
-            "model_name": "claude-sonnet-4-20250514",
+            "model_name": "claude-sonnet-5-5",
         },
         "s3_context_prefix": "s3://bucket/customers/cust-001/projects/repo",
         "user_message": "Hello, agent!",

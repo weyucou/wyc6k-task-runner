@@ -17,7 +17,7 @@ def _make_agent(**kwargs: Any) -> AgentConfig:
     defaults = {
         "name": "test-agent",
         "provider": LLMProvider.ANTHROPIC,
-        "model_name": "claude-sonnet-4-20250514",
+        "model_name": "claude-sonnet-5-5",
     }
     defaults.update(kwargs)
     return AgentConfig(**defaults)

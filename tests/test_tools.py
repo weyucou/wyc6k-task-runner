@@ -1,8 +1,11 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
+import inspect
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anthropic
 import pytest
 
 from marvin.tools.builtin import (
@@ -12,7 +15,7 @@ from marvin.tools.builtin import (
     MemorySearchTool,
     WebSearchTool,
 )
-from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool
+from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool, ImageTool
 from marvin.tools.registry import ToolRegistry
 
 # ---- CalculatorTool ----
@@ -545,3 +548,18 @@ class TestAskccRunTool:
             )
         _, kwargs = mock_wait.call_args
         assert kwargs.get("timeout") == custom_timeout
+
+
+# ---- ImageTool ----
+
+
+class TestImageToolVision:
+    def test_call_vision_returns_text_after_non_text_block(self) -> None:
+        reply = SimpleNamespace(content=[SimpleNamespace(type="thinking"), SimpleNamespace(type="text", text="A cat.")])
+        sdk_create = anthropic.Anthropic(api_key="x").messages.create
+        with patch("anthropic.Anthropic") as client_cls:
+            create = client_cls.return_value.messages.create
+            create.return_value = reply
+            result = ImageTool()._call_vision("key", "aGk=", "image/png", "Describe this image.")
+        assert result == "A cat."
+        inspect.signature(sdk_create).bind(**create.call_args.kwargs)  # request fits the installed SDK

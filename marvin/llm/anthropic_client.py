@@ -22,7 +22,7 @@ from marvin.llm.definitions import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = "claude-sonnet-4-20250514"
+_DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 class AnthropicClient(BaseLLMClient):
@@ -151,7 +151,10 @@ class AnthropicClient(BaseLLMClient):
         max_tokens: int = 4096,
         stop_sequences: list[str] | None = None,
     ) -> LLMResponse:
-        """Generate a response from Claude."""
+        """Generate a response from Claude.
+
+        `temperature` is ignored: API version 2026-10-21 rejects sampling parameters.
+        """
         client = self._get_client()
 
         # Build request using pydantic model for validation
@@ -159,7 +162,6 @@ class AnthropicClient(BaseLLMClient):
             model=self.model or _DEFAULT_MODEL,
             messages=self._convert_messages(messages),  # type: ignore[arg-type]
             max_tokens=max_tokens,
-            temperature=temperature,
             system=system_prompt,
             tools=tools,
             stop_sequences=stop_sequences,

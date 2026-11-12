@@ -13,7 +13,7 @@ ENV UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
 # Pin uv to a specific version for reproducible builds
-COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /usr/local/bin/uv
 
 WORKDIR /app
 

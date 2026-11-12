@@ -24,7 +24,7 @@ class AgentConfig(BaseModel):
     name: str
     description: str = ""
     provider: LLMProvider = LLMProvider.ANTHROPIC
-    model_name: str = "claude-sonnet-4-20250514"
+    model_name: str = "claude-sonnet-5-5"
     base_url: str = ""
     system_prompt: str = ""
     temperature: float = 0.7
