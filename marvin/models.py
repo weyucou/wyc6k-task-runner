@@ -2,7 +2,7 @@
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LLMProvider(StrEnum):
@@ -94,6 +94,9 @@ class ProjectContextConfig(BaseModel):
 
 class TaskEnvelope(BaseModel):
     """SQS message payload for task delivery to the worker."""
+
+    # Backstop: str(ValidationError) omits input values, so a logged traceback cannot echo agent.api_key.
+    model_config = ConfigDict(hide_input_in_errors=True)
 
     task_id: str
     customer_id: str

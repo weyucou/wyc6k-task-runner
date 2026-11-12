@@ -105,7 +105,9 @@ def main() -> int:
     try:
         envelope = TaskEnvelope.model_validate_json(raw)
     except ValidationError as exc:
-        log.error("Failed to parse task envelope", step="parse", status="failed", error=str(exc))
+        # Inputs stay out of the log: an envelope may carry secrets such as agent.api_key.
+        errors = exc.errors(include_url=False, include_input=False)
+        log.error("Failed to parse task envelope", step="parse", status="failed", errors=errors)
         return 2
 
     structlog.contextvars.bind_contextvars(
