@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
+import httpx
 import pytest
 
 from marvin.tools.builtin import (
@@ -149,9 +150,11 @@ class TestWebSearchTool:
         mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"):
-            with patch("httpx.AsyncClient", return_value=mock_cm):
-                result = asyncio.run(self.tool.execute(query="python"))
+        with (
+            patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"),
+            patch("httpx.AsyncClient", return_value=mock_cm),
+        ):
+            result = asyncio.run(self.tool.execute(query="python"))
 
         assert result.error is None
         assert result.data["count"] == 1
@@ -159,8 +162,6 @@ class TestWebSearchTool:
         assert result.data["results"][0]["snippet"] == "Official Python site"
 
     def test_http_error_returns_error(self) -> None:
-        import httpx
-
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=httpx.HTTPError("Connection refused"))
 
@@ -168,9 +169,11 @@ class TestWebSearchTool:
         mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"):
-            with patch("httpx.AsyncClient", return_value=mock_cm):
-                result = asyncio.run(self.tool.execute(query="python"))
+        with (
+            patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"),
+            patch("httpx.AsyncClient", return_value=mock_cm),
+        ):
+            result = asyncio.run(self.tool.execute(query="python"))
 
         assert result.error is not None
         assert "Search API request failed" in result.error
@@ -187,9 +190,11 @@ class TestWebSearchTool:
         mock_cm.__aenter__ = AsyncMock(return_value=mock_client)
         mock_cm.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"):
-            with patch("httpx.AsyncClient", return_value=mock_cm):
-                asyncio.run(self.tool.execute(query="python", num_results=3))
+        with (
+            patch("marvin.tools.builtin.ZAATAR_SEARCH_API_URL", "http://localhost:5000"),
+            patch("httpx.AsyncClient", return_value=mock_cm),
+        ):
+            asyncio.run(self.tool.execute(query="python", num_results=3))
 
         call_kwargs = mock_client.get.call_args
         assert call_kwargs.kwargs["params"]["count"] == 3
@@ -342,9 +347,11 @@ class TestGitHubIssueTool:
         assert result.error == "GITHUB_TOKEN environment variable is not set"
 
     def test_missing_gh_cli_returns_error(self) -> None:
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
         assert result.error is not None
         assert "'gh' CLI not found" in result.error
 
@@ -368,9 +375,11 @@ class TestGitHubIssueTool:
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"issue output", b""))
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
         assert result.error is None
         assert "issue output" in result.output
 
@@ -378,9 +387,11 @@ class TestGitHubIssueTool:
         mock_proc = MagicMock()
         mock_proc.returncode = 1
         mock_proc.communicate = AsyncMock(return_value=(b"", b"not found"))
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", issue_url="https://github.com/o/r/issues/1"))
         assert result.error is not None
         assert "gh exited with code 1" in result.error
 
@@ -416,9 +427,11 @@ class TestGitHubPRTool:
         assert result.error == "GITHUB_TOKEN environment variable is not set"
 
     def test_missing_gh_cli_returns_error(self) -> None:
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
         assert result.error is not None
         assert "'gh' CLI not found" in result.error
 
@@ -444,9 +457,11 @@ class TestGitHubPRTool:
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.communicate = AsyncMock(return_value=(b"pr output", b""))
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
         assert result.error is None
         assert "pr output" in result.output
 
@@ -454,9 +469,11 @@ class TestGitHubPRTool:
         mock_proc = MagicMock()
         mock_proc.returncode = 1
         mock_proc.communicate = AsyncMock(return_value=(b"", b"error msg"))
-        with patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}):
-            with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-                result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
+        with (
+            patch.dict("os.environ", {"GITHUB_TOKEN": "tok"}),
+            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
+        ):
+            result = asyncio.run(self.tool.execute(action="view", pr_url="https://github.com/o/r/pull/1"))
         assert result.error is not None
         assert "gh exited with code 1" in result.error
 

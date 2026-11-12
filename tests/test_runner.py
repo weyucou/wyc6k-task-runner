@@ -12,6 +12,7 @@ from marvin.llm.base import LLMMessage, LLMResponse, StopReason
 from marvin.models import AgentConfig, LLMProvider
 from marvin.runner import AgentRunner, _build_context_prefix
 from marvin.tools import ToolRegistry
+from marvin.tools.builtin import CalculatorTool
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -58,8 +59,6 @@ class TestAgentRunnerGetTools:
     def test_anthropic_format(self) -> None:
         agent = _make_agent(provider=LLMProvider.ANTHROPIC)
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin.tools.builtin import CalculatorTool
-
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("anthropic")
         assert len(tools) == 1
@@ -68,8 +67,6 @@ class TestAgentRunnerGetTools:
     def test_openai_format(self) -> None:
         agent = _make_agent(provider=LLMProvider.ANTHROPIC)
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin.tools.builtin import CalculatorTool
-
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("openai")
         assert len(tools) == 1
@@ -78,8 +75,6 @@ class TestAgentRunnerGetTools:
     def test_vllm_uses_openai_format(self) -> None:
         agent = _make_agent()
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin.tools.builtin import CalculatorTool
-
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("vllm")
         assert tools[0]["type"] == "function"
@@ -87,8 +82,6 @@ class TestAgentRunnerGetTools:
     def test_ollama_uses_openai_format(self) -> None:
         agent = _make_agent()
         runner = AgentRunner(agent=agent, register_builtins=False)
-        from marvin.tools.builtin import CalculatorTool
-
         runner.register_tool(CalculatorTool())
         tools = runner.get_tools_for_provider("ollama")
         assert tools[0]["type"] == "function"
