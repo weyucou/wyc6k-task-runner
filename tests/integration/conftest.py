@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Fixtures for the end-to-end pipeline integration tests.
 
 Every AWS service is backed by **moto** (`mock_aws`) — in-process, no Docker

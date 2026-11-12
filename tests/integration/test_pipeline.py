@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """End-to-end pipeline tests: SQS → agent → GitHub issue → S3 memory.
 
 Each scenario enqueues a `TaskEnvelope` on a moto-backed SQS queue, routes it the
@@ -7,7 +8,7 @@ boundaries are stubbed: the model (a scripted OpenAI-compatible endpoint the rea
 `OpenAIClient` talks to) and the `gh` CLI (a recording stand-in on PATH).
 """
 
-import datetime
+import datetime as dt
 import json
 from typing import Any
 from urllib.parse import urlparse
@@ -64,7 +65,7 @@ def _run_inline(monkeypatch, envelope_json: str) -> int:
 def _read_daily_memory(s3_context_prefix: str) -> str:
     """Read today's memory file written by the runtime."""
     parsed = urlparse(s3_context_prefix)
-    today = datetime.datetime.now(tz=datetime.UTC).date()
+    today = dt.datetime.now(tz=dt.UTC).date()
     key = f"{parsed.path.strip('/')}/memory/{today.year}/{today.isoformat()}.md"
     body = get_s3_client().get_object(Bucket=parsed.netloc, Key=key)["Body"].read()
     return body.decode("utf-8")
