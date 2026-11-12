@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]  # main-only, so feature-branch pushes do not run twice
+  # No `branches:` filter, so stacked PRs (base != main) also get checks.
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # SHA pinned to v4.2.2 — update via: gh release view -R actions/checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv
+        # SHA pinned to v10.3.3 — update via: gh release view -R astral-sh/setup-uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # Python 3.14 comes from `requires-python`; uv provisions it.
+        run: uv sync --locked
+
+      - name: Lint (ruff)
+        # --no-fix: `[tool.ruff] fix = true` would otherwise rewrite fixable findings and pass.
+        run: uv run poe check --no-fix
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # SHA pinned to v4.2.2 — update via: gh release view -R actions/checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv
+        # SHA pinned to v10.3.3 — update via: gh release view -R astral-sh/setup-uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Tests
+        # moto mocks AWS in-process, so no LocalStack or Postgres service container is needed.
+        run: uv run poe test
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        # SHA pinned to v4.2.2 — update via: gh release view -R actions/checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0  # gitleaks scans the full history
+
+      - name: Install gitleaks
+        # The CLI, not gitleaks/gitleaks-action: the action needs a paid license in organization repos.
+        run: |
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            | sudo tar xz -C /usr/local/bin gitleaks
+
+      - name: Scan for secrets
+        run: gitleaks detect --source . --redact --verbose
