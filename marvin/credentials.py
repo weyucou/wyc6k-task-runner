@@ -6,7 +6,7 @@ import logging
 import os
 
 from marvin.awsclients import get_secrets_manager_client
-from marvin.models import TaskEnvelope
+from marvin.models import LLMProvider, TaskEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,16 @@ class CredentialResolver:
         - anthropic_api_key_secret_id -> sets envelope.agent.api_key for the LLM client
 
         Falls back to GITHUB_TOKEN / ANTHROPIC_API_KEY env vars when secret IDs are absent.
+        The bedrock provider authenticates with AWS credentials, so no Anthropic key is resolved for it.
         Raises RuntimeError before processing if a Secrets Manager fetch fails.
         """
         github_token = _resolve_credential(envelope.github_token_secret_id, "GITHUB_TOKEN", "GitHub token")
         if github_token:
             os.environ["GITHUB_TOKEN"] = github_token
+
+        if envelope.agent.provider == LLMProvider.BEDROCK:
+            logger.debug("Skipping the Anthropic API key: provider bedrock uses AWS credentials")
+            return
 
         anthropic_key = _resolve_credential(
             envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key"

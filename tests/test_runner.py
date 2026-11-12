@@ -86,6 +86,11 @@ class TestAgentRunnerGetTools:
         tools = runner.get_tools_for_provider("ollama")
         assert tools[0]["type"] == "function"
 
+    def test_bedrock_uses_anthropic_format(self) -> None:
+        runner = AgentRunner(agent=_make_agent(), register_builtins=False)
+        runner.register_tool(CalculatorTool())
+        assert runner.get_tools_for_provider("bedrock") == runner.registry.to_anthropic_tools()
+
 
 class TestAgentRunnerChat:
     def _patch_client(self, runner: AgentRunner, response_content: str = "Test response") -> MagicMock:
