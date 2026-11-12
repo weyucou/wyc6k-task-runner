@@ -7,7 +7,9 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import threading
+from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
@@ -52,8 +54,7 @@ class ReadTool(BaseTool):
     async def execute(self, path: str, offset: int = 1, limit: int = 0) -> ToolResult:
         """Read file contents."""
         try:
-            expanded = os.path.expanduser(path)
-            with open(expanded, encoding="utf-8", errors="replace") as f:
+            with Path(path).expanduser().open(encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
 
             start = max(0, offset - 1)
@@ -97,10 +98,9 @@ class WriteTool(BaseTool):
     async def execute(self, path: str, content: str) -> ToolResult:
         """Write content to a file."""
         try:
-            expanded = os.path.expanduser(path)
-            os.makedirs(os.path.dirname(os.path.abspath(expanded)), exist_ok=True)
-            with open(expanded, "w", encoding="utf-8") as f:
-                f.write(content)
+            expanded = Path(path).expanduser()
+            expanded.resolve().parent.mkdir(parents=True, exist_ok=True)
+            expanded.write_text(content, encoding="utf-8")
             return ToolResult.success(
                 output=f"Successfully wrote {len(content)} characters to {path}.",
                 data={"path": path, "bytes_written": len(content.encode("utf-8"))},
@@ -143,9 +143,8 @@ class EditTool(BaseTool):
     async def execute(self, path: str, old_string: str, new_string: str) -> ToolResult:
         """Replace a string in a file."""
         try:
-            expanded = os.path.expanduser(path)
-            with open(expanded, encoding="utf-8") as f:
-                content = f.read()
+            expanded = Path(path).expanduser()
+            content = expanded.read_text(encoding="utf-8")
 
             count = content.count(old_string)
             if count == 0:
@@ -156,8 +155,7 @@ class EditTool(BaseTool):
                 )
 
             new_content = content.replace(old_string, new_string, 1)
-            with open(expanded, "w", encoding="utf-8") as f:
-                f.write(new_content)
+            expanded.write_text(new_content, encoding="utf-8")
 
             return ToolResult.success(
                 output=f"Successfully replaced 1 occurrence in {path}.",
@@ -254,7 +252,7 @@ class ExecTool(BaseTool):
 
     async def execute(self, command: str, cwd: str = "", timeout: int = 1800) -> ToolResult:
         """Execute a shell command."""
-        work_dir = os.path.expanduser(cwd) if cwd else None
+        work_dir = Path(cwd).expanduser() if cwd else None
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
@@ -350,11 +348,11 @@ class ProcessTool(BaseTool):
                 return ToolResult.from_error("command is required for action=start")
             if not session_id:
                 return ToolResult.from_error("session_id is required for action=start")
-            work_dir = os.path.expanduser(cwd) if cwd else None
+            work_dir = Path(cwd).expanduser() if cwd else None
             try:
-                proc = subprocess.Popen(
+                proc = subprocess.Popen(  # noqa: S602
                     command,
-                    shell=True,  # noqa: S602
+                    shell=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=work_dir,
@@ -363,8 +361,7 @@ class ProcessTool(BaseTool):
                 buf: list[str] = []
 
                 def _reader(p: subprocess.Popen, b: list[str]) -> None:
-                    for line in p.stdout:
-                        b.append(line)
+                    b.extend(p.stdout)  # appends line by line, so `output` sees lines as they arrive
 
                 t = threading.Thread(target=_reader, args=(proc, buf), daemon=True)
                 t.start()
@@ -715,8 +712,7 @@ class ImageTool(BaseTool):
             loop = asyncio.get_event_loop()
             raw = await loop.run_in_executor(None, self._fetch_url, source)
         else:
-            with open(os.path.expanduser(source), "rb") as f:
-                raw = f.read()
+            raw = Path(source).expanduser().read_bytes()
 
         encoded = base64.b64encode(raw).decode()
         # Detect media type from magic bytes
@@ -812,20 +808,24 @@ class BrowserAutomationTool(BaseTool):
         ToolParameter(
             name="output_path",
             type="string",
-            description="Path to save screenshot (used with action=screenshot).",
+            description=(
+                "Path to save screenshot (used with action=screenshot). "
+                "Defaults to screenshot.png in the system temp directory."
+            ),
             required=False,
-            default="/tmp/screenshot.png",
+            default="",
         ),
     ]
 
     async def execute(
         self,
+        *,
         action: str,
         url: str = "",
         selector: str = "",
         text: str = "",
         script: str = "",
-        output_path: str = "/tmp/screenshot.png",
+        output_path: str = "",
     ) -> ToolResult:
         """Perform browser action."""
         if async_playwright is None:
@@ -865,6 +865,7 @@ class BrowserAutomationTool(BaseTool):
                 if action == "screenshot":
                     if url:
                         await page.goto(url, timeout=30000)
+                    output_path = output_path or str(Path(tempfile.gettempdir()) / "screenshot.png")
                     await page.screenshot(path=output_path, full_page=True)
                     await browser.close()
                     return ToolResult.success(
@@ -1074,6 +1075,7 @@ class GitHubPRTool(BaseTool):
 
     async def execute(
         self,
+        *,
         action: str,
         repo: str = "",
         pr_url: str = "",

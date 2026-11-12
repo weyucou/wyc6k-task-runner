@@ -2,10 +2,13 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
+import base64
 import http.client
 import inspect
 import io
+import tempfile
 import threading
+import time
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +24,19 @@ from marvin.tools.builtin import (
     MemorySearchTool,
     WebSearchTool,
 )
-from marvin.tools.coding import AskccRunTool, GitHubIssueTool, GitHubPRTool, ImageTool
+from marvin.tools.coding import (
+    _BACKGROUND_PROCESSES,
+    AskccRunTool,
+    BrowserAutomationTool,
+    EditTool,
+    ExecTool,
+    GitHubIssueTool,
+    GitHubPRTool,
+    ImageTool,
+    ProcessTool,
+    ReadTool,
+    WriteTool,
+)
 from marvin.tools.registry import ToolRegistry
 
 # ---- CalculatorTool ----
@@ -619,3 +634,105 @@ class TestImageToolVision:
             result = ImageTool()._call_vision("key", "aGk=", "image/png", "Describe this image.")
         assert result == "A cat."
         inspect.signature(sdk_create).bind(**create.call_args.kwargs)  # request fits the installed SDK
+
+    def test_load_image_reads_a_local_file_under_home(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        raw = b"\x89PNG\r\n\x1a\n" + bytes(8)
+        (tmp_path / "pic.png").write_bytes(raw)
+        encoded, media_type = asyncio.run(ImageTool()._load_image("~/pic.png"))
+        assert base64.b64decode(encoded) == raw
+        assert media_type == "image/png"
+
+
+# ---- File tools: read / write / edit ----
+
+
+class TestFileTools:
+    def test_read_expands_home_and_slices_lines(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+        result = asyncio.run(ReadTool().execute(path="~/notes.txt", offset=2, limit=1))
+        assert result.output == "two\n"
+        assert result.data == {"path": "~/notes.txt", "lines_read": 1, "total_lines": 3}
+
+    def test_read_missing_file_returns_error(self, tmp_path) -> None:
+        missing = tmp_path / "missing.txt"
+        result = asyncio.run(ReadTool().execute(path=str(missing)))
+        assert result.error == f"File not found: {missing}"
+
+    @pytest.mark.parametrize("path", ["out.txt", "a/b/out.txt"])
+    def test_write_creates_missing_parent_directories(self, tmp_path, monkeypatch, path) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = asyncio.run(WriteTool().execute(path=path, content="héllo"))
+        assert result.error is None
+        assert result.data == {"path": path, "bytes_written": 6}
+        assert (tmp_path / path).read_text(encoding="utf-8") == "héllo"
+
+    def test_edit_replaces_a_unique_string(self, tmp_path) -> None:
+        target = tmp_path / "code.py"
+        target.write_text("a = 1\nb = 2\n", encoding="utf-8")
+        result = asyncio.run(EditTool().execute(path=str(target), old_string="b = 2", new_string="b = 3"))
+        assert result.error is None
+        assert target.read_text(encoding="utf-8") == "a = 1\nb = 3\n"
+
+    @pytest.mark.parametrize(("old_string", "error"), [("c = 3", "String not found"), (" = ", "appears 2 times")])
+    def test_edit_rejects_a_missing_or_ambiguous_string(self, tmp_path, old_string, error) -> None:
+        target = tmp_path / "code.py"
+        target.write_text("a = 1\nb = 2\n", encoding="utf-8")
+        result = asyncio.run(EditTool().execute(path=str(target), old_string=old_string, new_string="x"))
+        assert error in result.error
+        assert target.read_text(encoding="utf-8") == "a = 1\nb = 2\n"
+
+
+# ---- ExecTool / ProcessTool ----
+
+
+class TestExecTool:
+    def test_runs_in_the_expanded_cwd(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        result = asyncio.run(ExecTool().execute(command="pwd -P", cwd="~"))
+        assert result.error is None
+        assert result.output.strip() == str(tmp_path.resolve())
+
+
+class TestProcessTool:
+    def test_output_is_readable_while_the_process_runs(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+        tool = ProcessTool()
+        started = asyncio.run(
+            tool.execute(action="start", session_id="stream", command="pwd -P; exec sleep 30", cwd="~")
+        )
+        assert started.error is None
+        proc = _BACKGROUND_PROCESSES["stream"]["proc"]
+        try:
+            output = ""
+            deadline = time.monotonic() + 5
+            while not output and time.monotonic() < deadline:
+                time.sleep(0.05)
+                output = asyncio.run(tool.execute(action="output", session_id="stream")).output
+            assert output == f"{tmp_path.resolve()}\n"
+            assert asyncio.run(tool.execute(action="status", session_id="stream")).data["running"] is True
+        finally:
+            asyncio.run(tool.execute(action="stop", session_id="stream"))
+            proc.wait(timeout=5)
+
+
+# ---- BrowserAutomationTool ----
+
+
+class TestBrowserAutomationTool:
+    def test_screenshot_defaults_to_the_system_temp_dir(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        page = AsyncMock()
+        browser = AsyncMock()
+        browser.new_page.return_value = page
+        playwright = MagicMock()
+        playwright.chromium.launch = AsyncMock(return_value=browser)
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=playwright)
+        session.__aexit__ = AsyncMock(return_value=None)
+        with patch("marvin.tools.coding.async_playwright", return_value=session):
+            result = asyncio.run(BrowserAutomationTool().execute(action="screenshot"))
+        expected = str(tmp_path / "screenshot.png")
+        page.screenshot.assert_awaited_once_with(path=expected, full_page=True)
+        assert result.data == {"path": expected}
