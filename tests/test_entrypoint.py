@@ -4,8 +4,22 @@
 import json
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 import entrypoint
 from marvin.context import CustomerContextBundle, MemoryEntry
+
+LEAK_MARKER = "sk-ant-LEAKMARKER"
+# No user_message, and agent.api_key ends the JSON: pydantic's truncated input_value keeps the input's tail.
+LEAKY_ENVELOPE_JSON = json.dumps(
+    {
+        "task_id": "task-001",
+        "customer_id": "cust-001",
+        "session_id": "sess-001",
+        "s3_context_prefix": "s3://bucket/customers/cust-001/projects/repo",
+        "agent": {"name": "test-agent", "api_key": LEAK_MARKER},
+    }
+)
 
 
 def _make_envelope_dict(**kwargs) -> dict:
@@ -48,6 +62,18 @@ class TestMainExitCodes:
     def test_invalid_envelope_schema_returns_2(self, monkeypatch) -> None:
         monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps({"task_id": "x"}))
         assert entrypoint.main() == 2
+
+    @pytest.mark.parametrize(
+        ("raw", "named"),
+        [(LEAKY_ENVELOPE_JSON, "user_message"), (LEAKY_ENVELOPE_JSON[:-1], "json_invalid")],
+        ids=["missing-field", "truncated-json"],
+    )
+    def test_invalid_envelope_logged_without_input(self, monkeypatch, capsys, raw, named) -> None:
+        monkeypatch.setenv("TASK_ENVELOPE_JSON", raw)
+        assert entrypoint.main() == 2
+        out, err = capsys.readouterr()
+        assert LEAK_MARKER not in out + err
+        assert named in out
 
     def test_credential_resolve_failure_returns_2(self, monkeypatch) -> None:
         monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict()))

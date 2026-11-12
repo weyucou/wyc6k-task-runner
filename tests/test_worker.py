@@ -1,17 +1,32 @@
 # Copyright (c) 2026 MNKT
 """Tests for marvin.worker — the in-process SQS worker loop."""
 
+import json
 import logging
 import signal
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from marvin import worker
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+LEAK_MARKER = "sk-ant-LEAKMARKER"
+# No user_message, and agent.api_key ends the JSON: pydantic's truncated input_value keeps the input's tail.
+LEAKY_ENVELOPE_JSON = json.dumps(
+    {
+        "task_id": "task-001",
+        "customer_id": "cust-001",
+        "session_id": "sess-001",
+        "s3_context_prefix": "s3://bucket/customers/cust-001/projects/repo",
+        "agent": {"name": "test-agent", "api_key": LEAK_MARKER},
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -21,6 +36,39 @@ def _restore_shutdown_state() -> Iterator[None]:
     for signum, handler in handlers.items():
         signal.signal(signum, handler)
     worker._shutdown.clear()
+
+
+@pytest.fixture
+def sqs_queue(monkeypatch) -> Iterator[tuple[Any, str]]:
+    """A moto SQS queue that poll_once reads (dummy credentials, so nothing reaches real AWS)."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    with mock_aws():
+        sqs = boto3.client("sqs", region_name="us-east-1")
+        queue_url = sqs.create_queue(QueueName="tasks")["QueueUrl"]
+        monkeypatch.setattr(worker, "SQS_QUEUE_URL", queue_url)
+        yield sqs, queue_url
+
+
+class TestPollOnce:
+    @pytest.mark.parametrize(
+        ("body", "named"),
+        [(LEAKY_ENVELOPE_JSON, "user_message"), (LEAKY_ENVELOPE_JSON[:-1], "json_invalid")],
+        ids=["missing-field", "truncated-json"],
+    )
+    def test_invalid_envelope_logged_without_input_and_retained(self, sqs_queue, caplog, body, named) -> None:
+        sqs, queue_url = sqs_queue
+        sqs.send_message(QueueUrl=queue_url, MessageBody=body)
+        # marvin's loggers only: botocore's DEBUG output echoes the message body it received.
+        with caplog.at_level(logging.DEBUG, logger="marvin"):
+            worker.poll_once(sqs)
+        assert LEAK_MARKER not in caplog.text  # caplog.text includes formatted tracebacks
+        assert named in caplog.text
+        attributes = sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessagesNotVisible"]
+        )["Attributes"]
+        assert attributes["ApproximateNumberOfMessagesNotVisible"] == "1"  # not deleted: redelivered, then DLQ
 
 
 class TestMain:

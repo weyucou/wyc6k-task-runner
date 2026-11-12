@@ -5,7 +5,6 @@ Run with: python -m marvin.worker
 """
 
 import asyncio
-import json
 import logging
 import os
 import signal
@@ -13,6 +12,7 @@ import threading
 from typing import Any
 
 import boto3
+from pydantic import ValidationError
 
 from marvin.context import ContextBundleService
 from marvin.credentials import CredentialResolver
@@ -84,6 +84,16 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
     }
 
 
+def _parse_envelope(body: str) -> TaskEnvelope | None:
+    try:
+        return TaskEnvelope.model_validate_json(body)
+    except ValidationError as exc:
+        # Inputs stay out of the log: an envelope may carry secrets such as agent.api_key.
+        errors = exc.errors(include_url=False, include_input=False)
+    logger.error("Invalid task envelope; message left for redelivery / DLQ: %s", errors)
+    return None
+
+
 def poll_once(sqs: Any) -> None:
     """Poll SQS for one batch of messages and process them."""
     if not SQS_QUEUE_URL:
@@ -103,9 +113,10 @@ def poll_once(sqs: Any) -> None:
 
     for message in messages:
         receipt_handle = message["ReceiptHandle"]
+        envelope = _parse_envelope(message["Body"])
+        if envelope is None:
+            continue
         try:
-            body = json.loads(message["Body"])
-            envelope = TaskEnvelope.model_validate(body)
             resolver = CredentialResolver()
             resolver.resolve(envelope)
             logger.info("Processing task_id=%s for customer=%s", envelope.task_id, envelope.customer_id)
