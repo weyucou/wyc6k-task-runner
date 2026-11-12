@@ -1,10 +1,22 @@
 # Copyright (c) 2026 MNKT
 """Tests for marvin.models — AgentConfig, TaskEnvelope, ToolProfile."""
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
 from marvin.models import AgentConfig, LLMProvider, TaskEnvelope, ToolProfile
+
+LEAK_MARKER = "sk-ant-LEAKMARKER"
+# No user_message, and agent.api_key ends the input: pydantic's truncated input_value keeps the input's tail.
+LEAKY_ENVELOPE = {
+    "task_id": "t-001",
+    "customer_id": "c-001",
+    "session_id": "s-001",
+    "s3_context_prefix": "s3://bucket/prefix",
+    "agent": {"name": "agent", "api_key": LEAK_MARKER},
+}
 
 
 class TestAgentConfig:
@@ -116,6 +128,20 @@ class TestTaskEnvelope:
                 s3_context_prefix="s3://bucket/prefix",
                 user_message="Hi",
             )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            json.dumps(LEAKY_ENVELOPE),
+            json.dumps(LEAKY_ENVELOPE)[:-1],
+            json.dumps({**LEAKY_ENVELOPE, "user_message": "Hi", "agent": {"api_key": LEAK_MARKER}}),
+        ],
+        ids=["missing-field", "truncated-json", "missing-agent-field"],
+    )
+    def test_validation_error_hides_input(self, raw) -> None:
+        with pytest.raises(ValidationError) as exc_info:
+            TaskEnvelope.model_validate_json(raw)
+        assert LEAK_MARKER not in str(exc_info.value)
 
     def test_model_validate_from_dict(self) -> None:
         data = {
