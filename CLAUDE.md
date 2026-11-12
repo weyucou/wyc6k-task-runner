@@ -18,7 +18,8 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → `DockerLauncher` (`docker run`) or `EcsLauncher` (`ecs:RunTask`) per envelope, chosen by `get_launcher()` from `COMPUTE_BACKEND` |
 | `marvin/launchers/consumer.py` | Launcher SQS loop: validate, launch, delete the message only on success; visibility heartbeat |
 | `Dockerfile.launcher` | Launcher image for the `local-runner` compose profile (CI builds only `Dockerfile`) |
-| `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop |
+| `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop (`run_tool_loop`) |
+| `marvin/loop.py` | `run_tool_loop()` — the one tool-call loop; calls the provider client's single-call `generate()` each turn |
 | `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
 | `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
@@ -29,6 +30,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/definitions.py` | S3 path length constants and enum base classes |
 | `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
 | `tests/` | pytest tests (no Django test runner) |
+| `tests/fake_llm.py` | `FakeLLMClient` — scripted LLM for loop tests (`fake_text`, `fake_tool_calls`, `fake_error`, `fake_max_tokens`); records each request |
 | `pyproject.toml` | Project config; pure Python, no Django deps |
 
 ## Architecture
@@ -69,4 +71,5 @@ Full launcher settings: README → Launcher settings.
 - Do not add Django, psycopg, or DRF dependencies to `marvin/`.
 - `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
+- Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
 - Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
