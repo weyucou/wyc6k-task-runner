@@ -10,12 +10,13 @@ marvin is a stateless worker. It receives a hydrated context bundle (pulled from
 
 ## Worker Paths
 
-Two execution modes share the `marvin/` codebase. Choose based on deployment context:
+Three execution modes share the `marvin/` codebase. Choose based on deployment context:
 
 | Mode | Entry point | Invocation | When to use |
 |------|------------|------------|-------------|
 | **SQS consumer** | `marvin/worker.py` | `python -m marvin` | Long-lived container polling an SQS queue (e.g. ECS service) |
 | **One-shot Fargate** | `entrypoint.py` | container `ENTRYPOINT` | ECS Fargate RunTask per task — container starts, runs one `TaskEnvelope`, exits |
+| **Launcher** | `marvin/launchers/` | `python -m marvin.launchers` | Polls SQS and starts one one-shot container per `TaskEnvelope`: local `docker run` (`COMPUTE_BACKEND=docker`) or `ecs:RunTask` (`COMPUTE_BACKEND=ecs`) |
 
 ### One-shot Fargate flow (`entrypoint.py`)
 
@@ -32,6 +33,38 @@ entrypoint.py
 ```
 
 The one-shot path never polls SQS. `TASK_ENVELOPE_JSON` is injected by the ECS task definition override at launch time (see `wyc6k-infra`).
+
+### Launcher flow (`marvin/launchers/`)
+
+The launcher runs the one-shot path under the production contract (same image, same `entrypoint.py`, `TASK_ENVELOPE_JSON` env var) from an SQS queue. Usage and settings: [README → Local Docker run](README.md#local-docker-run).
+
+```
+SQS receive_message (consumer.poll_once)
+    ↓ TaskEnvelope.model_validate_json(body)      invalid → message left (→ DLQ)
+get_launcher()  ← COMPUTE_BACKEND
+    ├─ docker: docker run --rm -e TASK_ENVELOPE_JSON -e CUSTOMER_ID … <AGENT_WORKER_IMAGE>   (blocks, heartbeats)
+    └─ ecs:    ecs.run_task(FARGATE, awsvpc, containerOverrides[agent-worker]: TASK_ENVELOPE_JSON, CUSTOMER_ID)
+    ↓
+entrypoint.py in the container (exit 0 | 1 | 2)
+    ↓
+LaunchResult.success → delete_message, else leave the message for redelivery
+```
+
+The body is forwarded unchanged as `TASK_ENVELOPE_JSON`; it is validated, never re-serialised.
+
+| Backend | `success` means | On failure |
+|---------|-----------------|------------|
+| `docker` | the container exited `0` | exit `1`/`2` (or a docker error such as `125`) leaves the message: it is redelivered after `VISIBILITY_TIMEOUT`, then dead-lettered by the queue's redrive policy |
+| `ecs` | ECS accepted the task (task ARN, no `failures`) | an API error or `failures` leaves the message. `run_task` is asynchronous, so failures after dispatch surface in ECS task state / CloudWatch, not SQS |
+
+- **Heartbeat**: while a container runs, the docker backend extends the message visibility every `VISIBILITY_TIMEOUT/2` (`consumer.extend_visibility`), so a long task is not launched twice. SQS caps visibility at 12 h after receipt.
+- **Sequential**: envelopes run one at a time; only the running message is heartbeated, so keep `MAX_MESSAGES=1` with `docker`.
+- **No secrets in argv**: values reach the container via the `docker` process env and name-only `-e NAME`, so neither the envelope nor credentials appear in `ps`. Linux caps one env var at 128 KiB; a larger envelope fails to start and its message is left.
+- **ECS override limit**: container overrides total at most 8 KiB, so a large `TASK_ENVELOPE_JSON` (e.g. long `conversation_history`) fails `run_task` with `InvalidParameterException`. This limit already applies to the production path.
+- **ECS config**: the infra stack (`wyc6k-infra` `stacks/ecs-agent-worker.yaml`) publishes the cluster and task-definition ARNs to SSM at `/wyc6k/agent-infra/<stage>/agent_worker_cluster_arn` and `.../agent_worker_task_definition_arn`; the container is named `agent-worker`.
+- **Shutdown**: SIGTERM/SIGINT stop the loop after the current message. `docker compose stop` kills the launcher after its 10 s grace period; a running agent container keeps going (`--rm` removes it) and its message is redelivered once visibility expires.
+- **Docker socket**: the `local-runner` compose profile mounts `/var/run/docker.sock`, which gives the launcher full control of the host Docker daemon. Local use only.
+- **Router Lambda**: the planned `duration_hint` router can reuse `get_launcher("ecs")` / `EcsLauncher` directly.
 
 ### Building & publishing the agent-worker image
 
@@ -86,6 +119,7 @@ The workflow at `.github/workflows/build-image.yml` performs the same five steps
 |------|---------|
 | `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
 | `marvin/worker.py` | SQS consumer loop entry point (`python -m marvin`) |
+| `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → one agent-worker container per envelope, `COMPUTE_BACKEND=docker\|ecs` |
 | `marvin/runner.py` | `AgentRunner` — orchestrates tool-call loop with rate limiting |
 | `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
 | `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |

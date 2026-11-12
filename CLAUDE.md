@@ -15,6 +15,9 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — core Pydantic models |
 | `marvin/worker.py` | SQS consumer loop and `main()` entry point (`python -m marvin`) |
 | `marvin/__main__.py` | Module entry point — delegates to `worker.main()` |
+| `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → `DockerLauncher` (`docker run`) or `EcsLauncher` (`ecs:RunTask`) per envelope, chosen by `get_launcher()` from `COMPUTE_BACKEND` |
+| `marvin/launchers/consumer.py` | Launcher SQS loop: validate, launch, delete the message only on success; visibility heartbeat |
+| `Dockerfile.launcher` | Launcher image for the `local-runner` compose profile (CI builds only `Dockerfile`) |
 | `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop |
 | `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
@@ -39,6 +42,8 @@ uv run pytest              # run tests
 uv run ruff check          # lint
 uv run ruff format         # format
 python -m marvin           # start the SQS worker
+python -m marvin.launchers # start the launcher (one agent-worker container per envelope)
+docker compose --profile local-runner up -d  # LocalStack + launcher (see README → Local Docker run)
 ```
 
 Key environment variables:
@@ -52,9 +57,16 @@ Key environment variables:
 | `POLL_INTERVAL_SECONDS` | `5` | Sleep between polls |
 | `VISIBILITY_TIMEOUT` | `300` | SQS message visibility timeout (seconds) |
 | `MAX_MESSAGES` | `1` | Messages per SQS receive call |
+| `COMPUTE_BACKEND` | `docker` | Launcher backend: `docker` or `ecs`; anything else fails fast |
+| `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
+| `DOCKER_NETWORK` | — | `docker run --network` (compose: `wade_default`) |
+| `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS` | — | Required for the `ecs` backend |
+
+Full launcher settings: README → Launcher settings.
 
 ## Do Not
 
 - Do not add Django, psycopg, or DRF dependencies to `marvin/`.
 - `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
+- Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.

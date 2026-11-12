@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+#
+# Local launcher (`python -m marvin.launchers`): polls SQS and starts one agent-worker
+# container per TaskEnvelope through the host Docker daemon (mounted /var/run/docker.sock).
+# Built by the `local-runner` docker-compose profile; CI builds only ./Dockerfile.
+
+# ---------- Builder ----------
+FROM python:3.14-slim AS builder
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/app/.venv
+
+COPY --from=ghcr.io/astral-sh/uv:0.6.14 /uv /usr/local/bin/uv
+
+WORKDIR /app
+
+# Same dependency group as the agent-worker image (boto3, pydantic, structlog, ...).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    uv sync --frozen --no-dev --only-group fargate --no-install-project
+
+# ---------- Runtime ----------
+FROM python:3.14-slim
+
+# Docker CLI only: containers run on the host daemon through the mounted socket.
+COPY --from=docker:27-cli /usr/local/bin/docker /usr/local/bin/docker
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
+COPY marvin/ marvin/
+
+ENTRYPOINT ["python", "-m", "marvin.launchers"]

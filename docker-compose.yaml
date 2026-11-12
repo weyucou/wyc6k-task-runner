@@ -16,3 +16,39 @@ services:
       - localstack
     environment:
       - TARGETS=localstack:4566
+
+  # Opt-in local runner: `docker compose --profile local-runner up -d`.
+  # The launcher polls LocalStack SQS and starts one agent-worker container per TaskEnvelope.
+
+  agent-worker-image:
+    profiles: ["local-runner"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: weyucou/agent-worker:local
+    entrypoint: ["true"]  # build-only: the launcher runs this image once per task
+
+  launcher:
+    profiles: ["local-runner"]
+    build:
+      context: .
+      dockerfile: Dockerfile.launcher
+    image: weyucou/agent-worker-launcher:local
+    depends_on:
+      - localstack
+    volumes:
+      # Local use only: gives the launcher control of the host Docker daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      COMPUTE_BACKEND: docker
+      AGENT_WORKER_IMAGE: weyucou/agent-worker:local
+      DOCKER_NETWORK: wade_default  # agent containers join this network to reach localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/tasks
+      SQS_ENDPOINT_URL: http://localstack:4566
+      S3_ENDPOINT_URL: http://localstack:4566
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      ENVIRONMENT: development
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
