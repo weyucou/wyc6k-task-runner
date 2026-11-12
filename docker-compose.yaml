@@ -52,3 +52,7 @@ services:
       ENVIRONMENT: development
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Amazon Bedrock (provider "bedrock"): a real AWS profile, so Bedrock does not sign with the LocalStack keys above
+      BEDROCK_AWS_REGION: ${BEDROCK_AWS_REGION:-}
+      BEDROCK_AWS_PROFILE: ${BEDROCK_AWS_PROFILE:-}
+      DOCKER_AWS_CONFIG_DIR: ${DOCKER_AWS_CONFIG_DIR:-}  # host path, e.g. $HOME/.aws; mounted into agent containers
