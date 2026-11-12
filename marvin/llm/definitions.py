@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Definitions and types for LLM clients."""
 
 from typing import Any

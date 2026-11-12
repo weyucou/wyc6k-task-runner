@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tests for marvin.credentials — CredentialResolver."""
 
 import logging

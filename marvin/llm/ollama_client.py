@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Ollama LLM client with tool support."""
 
 import json

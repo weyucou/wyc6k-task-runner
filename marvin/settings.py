@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 import os
 
 AWS_DEFAULT_REGION: str = os.getenv("AWS_DEFAULT_REGION", "ap-northeast-1")

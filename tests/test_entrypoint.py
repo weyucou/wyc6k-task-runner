@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tests for entrypoint.py — one-shot Fargate runner."""
 
 import json

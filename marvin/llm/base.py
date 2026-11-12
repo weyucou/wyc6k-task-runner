@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Base classes for LLM provider clients."""
 
 import logging

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 from enum import Enum
 
 MAX_S3_BUCKET_LENGTH = 63

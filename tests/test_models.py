@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tests for marvin.models — AgentConfig, TaskEnvelope, ToolProfile."""
 
 import pytest

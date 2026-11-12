@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """ECS backend: ecs:RunTask on Fargate with the TASK_ENVELOPE_JSON container override."""
 
 import os

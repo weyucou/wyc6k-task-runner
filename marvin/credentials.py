@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """AWS Secrets Manager credential resolver for the marvin worker."""
 
 import json

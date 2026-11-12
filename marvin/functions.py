@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 import os
 import secrets
 import time

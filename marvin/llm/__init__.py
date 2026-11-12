@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason, ToolCall
 from marvin.llm.factory import create_llm_client
 

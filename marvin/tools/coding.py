@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Coding tools for file operations, shell execution, web fetching, and agent sessions."""
 
 import asyncio

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Launcher interface shared by the compute backends."""
 
 from typing import TYPE_CHECKING, Protocol

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """SQS consumer worker entry point.
 
 Run with: python -m marvin.worker

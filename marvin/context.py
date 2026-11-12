@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 import datetime
 import logging
 import re

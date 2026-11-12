@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tests for marvin.launchers — backend selection, docker/ecs launch, SQS consumer."""
 
 import json

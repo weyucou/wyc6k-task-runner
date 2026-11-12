@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """SQS loop: receive a TaskEnvelope, launch it, delete the message only on success.
 
 Run with: python -m marvin.launchers

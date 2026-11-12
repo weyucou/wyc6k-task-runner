@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Built-in tools for the agent system."""
 
 import datetime

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """One-shot Fargate/Batch entrypoint for the marvin agent worker.
 
 ECS Fargate launches one container per task with TASK_ENVELOPE_JSON set.

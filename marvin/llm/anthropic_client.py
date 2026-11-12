@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Anthropic Claude LLM client with tool support."""
 
 import logging

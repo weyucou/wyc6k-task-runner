@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """AWS client factory functions."""
 
 from typing import Any
