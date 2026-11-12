@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """The integration fixtures must not leak a resolved GITHUB_TOKEN into the session.
 
 `CredentialResolver.resolve()` writes the token it fetched from Secrets Manager
