@@ -1,9 +1,15 @@
 repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  # Ruff version.
-  rev: v0.14.10
+  # Ruff version; keep in step with the `ruff` dev dependency in pyproject.toml.
+  rev: v0.17.4
   hooks:
     # Run the linter.
     - id: ruff
+      args: [--fix]
     # Run the formatter.
     - id: ruff-format
+- repo: https://github.com/gitleaks/gitleaks
+  # Matches the pinned CLI version the CI secret-scan job installs.
+  rev: v8.30.1
+  hooks:
+    - id: gitleaks
