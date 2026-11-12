@@ -1,5 +1,5 @@
 # Copyright (c) 2026 MNKT
-import datetime
+import datetime as dt
 import logging
 import re
 from typing import Any
@@ -16,7 +16,7 @@ _MEMORY_FILE_PATTERN = re.compile(r"(\d{4}-\d{2}-\d{2})(_WEEKLY_SUMMARY)?\.md$")
 
 
 class MemoryEntry(BaseModel):
-    date: datetime.date
+    date: dt.date
     filename: str
     content: str
     is_weekly_summary: bool = False
@@ -82,7 +82,7 @@ class ContextBundleService:
                 filename = key.split("/")[-1]
                 match = _MEMORY_FILE_PATTERN.search(filename)
                 if match:
-                    entry_date = datetime.date.fromisoformat(match.group(1))
+                    entry_date = dt.date.fromisoformat(match.group(1))
                     content = self._read_object(s3, bucket, key)
                     daily_memories.append(
                         MemoryEntry(

@@ -2,7 +2,11 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
+import http.client
 import inspect
+import io
+import threading
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -216,6 +220,40 @@ class TestBrowserToolValidation:
         is_valid, error = self.tool.validate_params({"url": "http://example.com"})
         assert is_valid
         assert error is None
+
+
+class TestBrowserTool:
+    def test_fetches_off_the_event_loop_thread(self) -> None:
+        calls: list[tuple[str, int, threading.Thread]] = []
+
+        def fake_urlopen(url: str, timeout: int) -> io.BytesIO:
+            calls.append((url, timeout, threading.current_thread()))
+            return io.BytesIO(b"<p>hello</p>")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = asyncio.run(BrowserTool().execute(url="http://example.com"))
+        assert result.error is None
+        assert result.output == "<p>hello</p>"
+        assert result.data == {"url": "http://example.com", "length": 12}
+        [(url, timeout, fetch_thread)] = calls
+        assert (url, timeout) == ("http://example.com", 10)
+        assert fetch_thread is not threading.main_thread()
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            urllib.error.URLError("connection refused"),
+            TimeoutError("timed out"),
+            ValueError("unknown url type: 'example'"),
+            http.client.IncompleteRead(b""),
+        ],
+        ids=["url-error", "timeout", "bad-url", "http-protocol"],
+    )
+    def test_fetch_errors_return_an_error_result(self, exc) -> None:
+        with patch("urllib.request.urlopen", side_effect=exc):
+            result = asyncio.run(BrowserTool().execute(url="http://example.com"))
+        assert result.error is not None
+        assert result.error.startswith("Failed to fetch URL:")
 
 
 # ---- MemorySearchTool (stateless) ----

@@ -129,6 +129,7 @@ def poll_once(
     launcher: Launcher,
     queue_url: str,
     visibility_timeout: int,
+    *,
     max_messages: int = 1,
     wait_time_seconds: int = SQS_WAIT_TIME_SECONDS,
 ) -> None:
@@ -180,7 +181,7 @@ def main() -> int:
     # Ctrl-C still reaches the container, since the `docker run` child shares the foreground process group.
     while not stop.is_set():
         try:
-            poll_once(sqs, launcher, queue_url, visibility_timeout, max_messages)
+            poll_once(sqs, launcher, queue_url, visibility_timeout, max_messages=max_messages)
         except (BotoCoreError, ClientError) as exc:
             log.warning("SQS call failed; retrying", error=str(exc), retry_in_seconds=poll_interval)
             # time.sleep, not stop.wait: Event.set() from a signal handler can deadlock a waiting main thread.

@@ -515,7 +515,7 @@ class TestMain:
         launcher = FakeLauncher()
         polls: list[tuple[Any, ...]] = []
 
-        def poll(*args: Any) -> None:
+        def poll(*args: Any, **_kwargs: Any) -> None:
             polls.append(args)
             if len(polls) == 1:
                 raise ClientError({"Error": {"Code": "QueueDoesNotExist", "Message": "not yet"}}, "ReceiveMessage")
@@ -549,7 +549,10 @@ class TestMain:
         monkeypatch.setenv("MAX_MESSAGES", max_messages)
         with (
             patch("marvin.launchers.consumer.get_launcher", return_value=launcher),
-            patch("marvin.launchers.consumer.poll_once", side_effect=lambda *_: signal.raise_signal(signal.SIGTERM)),
+            patch(
+                "marvin.launchers.consumer.poll_once",
+                side_effect=lambda *_, **__: signal.raise_signal(signal.SIGTERM),
+            ),
         ):
             assert main() == 0
         lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]

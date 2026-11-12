@@ -37,6 +37,7 @@ class EcsLauncher:
         task_definition: str,
         subnets: list[str],
         security_groups: list[str],
+        *,
         assign_public_ip: str = "DISABLED",
         container_name: str = DEFAULT_CONTAINER_NAME,
     ) -> None:
