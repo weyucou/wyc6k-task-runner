@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Docker backend: `docker run --rm` the agent-worker image, the local equivalent of ecs:RunTask."""
 
 import os

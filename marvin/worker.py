@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """SQS consumer worker entry point.
 
 Run with: python -m marvin.worker
@@ -8,6 +9,7 @@ import json
 import logging
 import os
 import signal
+import threading
 from typing import Any
 
 import boto3
@@ -27,13 +29,12 @@ POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "5"))
 MAX_MESSAGES = int(os.getenv("MAX_MESSAGES", "1"))
 VISIBILITY_TIMEOUT = int(os.getenv("VISIBILITY_TIMEOUT", "300"))
 
-_shutdown = False
+_shutdown = threading.Event()
 
 
-def _handle_signal(signum: int, frame: Any) -> None:
-    global _shutdown
+def _handle_signal(signum: int, _frame: Any) -> None:
     logger.info("Received signal %d, shutting down...", signum)
-    _shutdown = True
+    _shutdown.set()
 
 
 def _get_sqs_client() -> Any:
@@ -112,8 +113,8 @@ def poll_once(sqs: Any) -> None:
             result = asyncio.run(process_envelope(envelope))
             logger.info("Completed task_id=%s: %d chars", result["task_id"], len(result["response"]))
             sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
-        except Exception as exc:
-            logger.exception("Failed to process message: %s", exc)
+        except Exception:
+            logger.exception("Failed to process message")
 
 
 def main() -> None:
@@ -128,11 +129,11 @@ def main() -> None:
     logger.info("marvin-manager worker starting (queue=%s)", SQS_QUEUE_URL)
     sqs = _get_sqs_client()
 
-    while not _shutdown:
+    while not _shutdown.is_set():
         try:
             poll_once(sqs)
-        except Exception as exc:
-            logger.exception("Poll error: %s", exc)
+        except Exception:
+            logger.exception("Poll error")
 
     logger.info("Worker shutdown complete")
 

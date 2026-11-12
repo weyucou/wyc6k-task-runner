@@ -1,7 +1,11 @@
+# Copyright (c) 2026 MNKT
 """Built-in tools for the agent system."""
 
-import datetime
+import asyncio
+import datetime as dt
+import http.client
 import logging
+import urllib.request
 from typing import Any
 
 import httpx
@@ -42,9 +46,9 @@ class DateTimeTool(BaseTool):
 
             tz = zoneinfo.ZoneInfo(timezone)
         except (KeyError, zoneinfo.ZoneInfoNotFoundError):
-            tz = datetime.UTC
+            tz = dt.UTC
 
-        now = datetime.datetime.now(tz)
+        now = dt.datetime.now(tz)
 
         if output_format == "human":
             output = now.strftime("%A, %B %d, %Y at %I:%M %p %Z")
@@ -163,17 +167,19 @@ class BrowserTool(BaseTool):
 
     async def execute(self, url: str) -> ToolResult:
         """Fetch content from a URL."""
-        import urllib.request  # noqa: PLC0415
-
         try:
-            with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
-                content = response.read().decode("utf-8", errors="replace")
-            return ToolResult.success(
-                output=content,
-                data={"url": url, "length": len(content)},
-            )
-        except Exception as exc:
+            content = await asyncio.to_thread(self._fetch, url)
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            # OSError covers URLError, HTTPError and timeouts; ValueError an unsupported or malformed URL.
             return ToolResult.from_error(f"Failed to fetch URL: {exc}")
+        return ToolResult.success(
+            output=content,
+            data={"url": url, "length": len(content)},
+        )
+
+    def _fetch(self, url: str) -> str:
+        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+            return response.read().decode("utf-8", errors="replace")
 
 
 class MemoryStoreTool(BaseTool):

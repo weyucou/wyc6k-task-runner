@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Agent runner service for executing conversations with tool support."""
 
 import logging

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """One-shot Fargate/Batch entrypoint for the marvin agent worker.
 
 ECS Fargate launches one container per task with TASK_ENVELOPE_JSON set.
@@ -11,7 +12,7 @@ Exit codes:
 """
 
 import asyncio
-import datetime
+import datetime as dt
 import os
 import sys
 from typing import Any
@@ -145,7 +146,7 @@ def main() -> int:
     # Step 5: Write memory summary
     log.info("Writing memory entry", step="write-memory", status="start")
     try:
-        today = datetime.datetime.now(tz=datetime.UTC).date()
+        today = dt.datetime.now(tz=dt.UTC).date()
         memory_entry = MemoryEntry(
             date=today,
             filename=f"{today.isoformat()}.md",

@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """OpenAI-compatible LLM client with tool support.
 
 This client works with:

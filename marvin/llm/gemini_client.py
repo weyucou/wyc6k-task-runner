@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Google Gemini LLM client with tool support."""
 
 import logging

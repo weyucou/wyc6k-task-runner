@@ -90,8 +90,6 @@ unsafe-fixes = false
 
 [tool.ruff.lint]
 select = ["ALL"]
-# S603 (launchers/docker.py): `docker run` gets a list argv, no shell, built from the operator's own env config.
-extend-per-file-ignores = { "**/__init__.py" = ["I", "F403"], "entrypoint.py" = ["BLE001", "TRY400"], "marvin/launchers/docker.py" = ["S603"], "tests/**" = ["ANN001", "PLR2004", "S105"] }
 extend-safe-fixes = [
     "D200",  # unnecessary-multiline-docstring
     "ANN204"  # missing-return-type-special-method (__init__)
@@ -169,6 +167,28 @@ fixable = ["ALL"]
 unfixable = []
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.extend-per-file-ignores]
+"**/__init__.py" = ["I", "F403"]
+"entrypoint.py" = ["BLE001", "TRY400"]
+# S603: `docker run` gets a list argv, no shell, built from the operator's own env config.
+"marvin/launchers/docker.py" = ["S603"]
+"marvin/tools/coding.py" = [
+    # ASYNC109: `timeout` is a parameter of the LLM-facing tool schema; the registry passes it by name.
+    "ASYNC109",
+    # ASYNC220: ProcessTool and SessionsSpawnTool keep their Popen handles in module-level registries for
+    # later tool calls; an asyncio subprocess is bound to the event loop that created it.
+    "ASYNC220",
+    # TODO(#98): temporary. Blocking file I/O inside the async tools.
+    "ASYNC230",
+    "ASYNC240",
+    # TODO(#98): temporary. The BrowserAutomationTool, GitHubIssueTool and GitHubPRTool action dispatchers.
+    "C901",
+    "PLR0912",
+]
+# S105/S106: test fixtures pass Secrets Manager secret IDs and stub tokens, not secrets.
+# PLR0917: pytest injects fixtures by name, so a test's positional-argument count is not an API.
+"tests/**" = ["ANN001", "PLR0917", "PLR2004", "S105", "S106"]
 
 [tool.ruff.lint.mccabe]
 # Flag errors (`C901`) whenever the complexity level exceeds this value.

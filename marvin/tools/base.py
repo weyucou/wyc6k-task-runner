@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Base classes for tool definitions and execution."""
 
 import logging

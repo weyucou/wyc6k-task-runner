@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tool registry for managing available tools."""
 
 import logging

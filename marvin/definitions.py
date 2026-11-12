@@ -1,4 +1,5 @@
-from enum import Enum
+# Copyright (c) 2026 MNKT
+from enum import Enum, StrEnum
 
 MAX_S3_BUCKET_LENGTH = 63
 MAX_S3_KEY_LENGTH = 1024
@@ -16,7 +17,7 @@ class IntegerEnumWithChoices(int, Enum):
         return tuple(e.value for e in cls)
 
 
-class StringEnumWithChoices(str, Enum):
+class StringEnumWithChoices(StrEnum):
     @classmethod
     def choices(cls) -> tuple[tuple[str, str], ...]:
         return tuple((str(e.value), str(e.value)) for e in cls)

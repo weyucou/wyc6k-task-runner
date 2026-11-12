@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Compute backends that run one agent-worker container per TaskEnvelope.
 
 Select the backend with COMPUTE_BACKEND=docker|ecs. The SQS loop lives in consumer.py

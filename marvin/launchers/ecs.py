@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """ECS backend: ecs:RunTask on Fargate with the TASK_ENVELOPE_JSON container override."""
 
 import os
@@ -36,6 +37,7 @@ class EcsLauncher:
         task_definition: str,
         subnets: list[str],
         security_groups: list[str],
+        *,
         assign_public_ip: str = "DISABLED",
         container_name: str = DEFAULT_CONTAINER_NAME,
     ) -> None:

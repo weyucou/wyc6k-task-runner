@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 from enum import StrEnum
 from typing import Any
 

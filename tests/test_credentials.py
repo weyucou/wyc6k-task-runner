@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """Tests for marvin.credentials — CredentialResolver."""
 
 import logging
@@ -11,14 +12,14 @@ from marvin.models import AgentConfig, TaskEnvelope
 
 
 def _make_envelope(**kwargs) -> TaskEnvelope:
-    defaults = dict(
-        task_id="t-001",
-        customer_id="c-001",
-        session_id="s-001",
-        agent=AgentConfig(name="test-agent"),
-        s3_context_prefix="s3://bucket/prefix",
-        user_message="Hello",
-    )
+    defaults = {
+        "task_id": "t-001",
+        "customer_id": "c-001",
+        "session_id": "s-001",
+        "agent": AgentConfig(name="test-agent"),
+        "s3_context_prefix": "s3://bucket/prefix",
+        "user_message": "Hello",
+    }
     defaults.update(kwargs)
     return TaskEnvelope(**defaults)
 
@@ -41,9 +42,11 @@ class TestFetchSecret:
     def test_raises_runtime_error_on_fetch_failure(self) -> None:
         mock_client = MagicMock()
         mock_client.get_secret_value.side_effect = Exception("AccessDenied")
-        with patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client):
-            with pytest.raises(RuntimeError, match="Failed to fetch secret"):
-                _fetch_secret("arn:aws:secretsmanager:ap-northeast-1:123:secret:tok")
+        with (
+            patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client),
+            pytest.raises(RuntimeError, match="Failed to fetch secret"),
+        ):
+            _fetch_secret("arn:aws:secretsmanager:ap-northeast-1:123:secret:tok")
 
     def test_json_without_value_key_returns_raw(self) -> None:
         mock_client = MagicMock()
@@ -87,9 +90,11 @@ class TestCredentialResolver:
         envelope = _make_envelope(github_token_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:bad")
         mock_client = MagicMock()
         mock_client.get_secret_value.side_effect = Exception("ResourceNotFoundException")
-        with patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client):
-            with pytest.raises(RuntimeError, match="Failed to fetch secret"):
-                CredentialResolver().resolve(envelope)
+        with (
+            patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client),
+            pytest.raises(RuntimeError, match="Failed to fetch secret"),
+        ):
+            CredentialResolver().resolve(envelope)
 
     def test_no_secret_ids_no_env_vars_resolves_none(self, monkeypatch) -> None:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
@@ -107,8 +112,10 @@ class TestCredentialResolver:
         )
         mock_client = MagicMock()
         mock_client.get_secret_value.return_value = {"SecretString": "super-secret-value-xyz"}
-        with patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client):
-            with caplog.at_level(logging.DEBUG, logger="marvin.credentials"):
-                CredentialResolver().resolve(envelope)
+        with (
+            patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client),
+            caplog.at_level(logging.DEBUG, logger="marvin.credentials"),
+        ):
+            CredentialResolver().resolve(envelope)
         for record in caplog.records:
             assert "super-secret-value-xyz" not in record.message

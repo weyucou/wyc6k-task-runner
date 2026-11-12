@@ -1,4 +1,4 @@
-# ruff: noqa: CPY001  (ruff 0.17 rule; no file in the repo carries a copyright header)
+# Copyright (c) 2026 MNKT
 """Tests for LLM client request kwargs, checked against the installed provider SDKs."""
 
 import inspect

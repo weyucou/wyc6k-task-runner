@@ -1,3 +1,4 @@
+# Copyright (c) 2026 MNKT
 """AWS Secrets Manager credential resolver for the marvin worker."""
 
 import json
@@ -65,6 +66,8 @@ class CredentialResolver:
         if github_token:
             os.environ["GITHUB_TOKEN"] = github_token
 
-        anthropic_key = _resolve_credential(envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key")
+        anthropic_key = _resolve_credential(
+            envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key"
+        )
         if anthropic_key:
             envelope.agent.api_key = anthropic_key
