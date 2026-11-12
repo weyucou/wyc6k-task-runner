@@ -25,7 +25,7 @@ ECS RunTask (TASK_ENVELOPE_JSON env var)
     ↓
 entrypoint.py
     1. Parse   — TaskEnvelope.model_validate_json(TASK_ENVELOPE_JSON)
-    2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN / api_key
+    2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN / api_key (no api_key for bedrock)
     3. Pull    — ContextBundleService.pull(s3_context_prefix) → CustomerContextBundle
     4. Run     — AgentRunner.chat(user_message, ...)
     5. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3
@@ -151,7 +151,7 @@ contract; it must never move into `marvin/`.
 | `marvin/runner.py` | `AgentRunner` — builds the prompt and tool list, applies rate limiting, runs the tool-call loop |
 | `marvin/loop.py` | `run_tool_loop()` — the tool-call loop, shared by every provider client |
 | `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
-| `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
+| `marvin/llm/` | LLM clients (Anthropic, Bedrock, Gemini, OpenAI, Ollama) |
 | `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
 
@@ -209,6 +209,7 @@ Per-agent allow/deny lists can further restrict or extend a profile.
 
 `BaseLLMClient` ABC with implementations for:
 - Anthropic Claude
+- Claude on Amazon Bedrock (`provider: bedrock`): `BedrockClient` subclasses `AnthropicClient` and swaps only the SDK client for `AsyncAnthropicBedrockMantle`, signed with AWS IAM credentials (no Anthropic API key). Settings `BEDROCK_AWS_REGION`, `BEDROCK_AWS_PROFILE`: [README](README.md#running-with-amazon-bedrock)
 - Google Gemini
 - Ollama (local)
 - OpenAI / vLLM
