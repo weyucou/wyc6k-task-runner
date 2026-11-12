@@ -1,17 +1,19 @@
 # Copyright (c) 2026 MNKT
 """Tests for marvin.worker — the in-process SQS worker loop."""
 
+import asyncio
 import json
 import logging
 import signal
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import boto3
 import pytest
 from moto import mock_aws
 
 from marvin import worker
+from marvin.models import AgentConfig, TaskEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -69,6 +71,27 @@ class TestPollOnce:
             QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessagesNotVisible"]
         )["Attributes"]
         assert attributes["ApproximateNumberOfMessagesNotVisible"] == "1"  # not deleted: redelivered, then DLQ
+
+
+class TestProcessEnvelope:
+    def test_background_processes_stopped_when_the_run_raises(self) -> None:
+        envelope = TaskEnvelope(
+            task_id="task-001",
+            customer_id="cust-001",
+            session_id="sess-001",
+            agent=AgentConfig(name="test-agent"),
+            s3_context_prefix="s3://bucket/customers/cust-001/projects/repo",
+            user_message="Hello, agent!",
+        )
+        with (
+            patch("marvin.worker.ContextBundleService"),
+            patch("marvin.worker.AgentRunner") as mock_runner_cls,
+            patch("marvin.worker.stop_background_processes") as mock_stop,
+        ):
+            mock_runner_cls.return_value.chat = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+            with pytest.raises(RuntimeError, match="LLM timeout"):
+                asyncio.run(worker.process_envelope(envelope))
+        mock_stop.assert_called_once_with()
 
 
 class TestMain:
