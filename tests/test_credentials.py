@@ -100,6 +100,23 @@ class TestCredentialResolver:
         ):
             CredentialResolver().resolve(envelope)
 
+    def test_bedrock_skips_anthropic_key(self, monkeypatch) -> None:
+        """Bedrock authenticates with AWS credentials: no Anthropic key is fetched or read."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "env-ant-key")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        github_secret_id = "arn:aws:secretsmanager:ap-northeast-1:123:secret:gh"
+        envelope = _make_envelope(
+            agent={"provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5", "tool_profile": "coding"},
+            github_token_secret_id=github_secret_id,
+            anthropic_api_key_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:ak",
+        )
+        mock_client = MagicMock()
+        mock_client.get_secret_value.return_value = {"SecretString": "gh-tok-abc"}
+        with patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client):
+            assert CredentialResolver().resolve(envelope) is None
+        mock_client.get_secret_value.assert_called_once_with(SecretId=github_secret_id)
+        assert os.environ["GITHUB_TOKEN"] == "gh-tok-abc"
+
     def test_no_secret_ids_no_env_vars_resolves_none(self, monkeypatch) -> None:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
