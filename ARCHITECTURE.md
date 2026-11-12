@@ -58,11 +58,14 @@ The body is forwarded unchanged as `TASK_ENVELOPE_JSON`; it is validated, never 
 | `ecs` | ECS accepted the task (task ARN, no `failures`) | an API error or `failures` leaves the message. `run_task` is asynchronous, so failures after dispatch surface in ECS task state / CloudWatch, not SQS |
 
 - **Heartbeat**: while a container runs, the docker backend extends the message visibility every `VISIBILITY_TIMEOUT/2` (`consumer.extend_visibility`), so a long task is not launched twice. SQS caps visibility at 12 h after receipt.
-- **Sequential**: envelopes run one at a time; only the running message is heartbeated, so keep `MAX_MESSAGES=1` with `docker`.
+- **Sequential**: envelopes run one at a time; only the running message is heartbeated, so keep `MAX_MESSAGES=1` with `docker` (the launcher logs a warning at startup otherwise).
+- **At-least-once**: if `delete_message` fails after a successful task, the launcher logs `Task succeeded but delete_message failed` and the error propagates to the poll loop's retry. The message is redelivered, so the task runs again.
 - **No secrets in argv**: values reach the container via the `docker` process env and name-only `-e NAME`, so neither the envelope nor credentials appear in `ps`. Linux caps one env var at 128 KiB; a larger envelope fails to start and its message is left.
 - **ECS override limit**: container overrides total at most 8 KiB, so a large `TASK_ENVELOPE_JSON` (e.g. long `conversation_history`) fails `run_task` with `InvalidParameterException`. This limit already applies to the production path.
 - **ECS config**: the infra stack (`wyc6k-infra` `stacks/ecs-agent-worker.yaml`) publishes the cluster and task-definition ARNs to SSM at `/wyc6k/agent-infra/<stage>/agent_worker_cluster_arn` and `.../agent_worker_task_definition_arn`; the container is named `agent-worker`.
-- **Shutdown**: SIGTERM/SIGINT stop the loop after the current message. `docker compose stop` kills the launcher after its 10 s grace period; a running agent container keeps going (`--rm` removes it) and its message is redelivered once visibility expires.
+- **Shutdown**: SIGTERM or SIGINT sent to the launcher process stops the loop once the running container exits; the launcher never stops a container itself.
+  - Ctrl-C in a terminal reaches the whole foreground process group, including the `docker run` child, which forwards SIGINT to the container. The agent is interrupted and exits non-zero, and its message is left for redelivery.
+  - `docker compose stop` sends SIGTERM, then kills the launcher after the 10 s grace period. A running agent container keeps going (`--rm` removes it), but nothing deletes its message, so it is redelivered once visibility expires and the task runs again.
 - **Docker socket**: the `local-runner` compose profile mounts `/var/run/docker.sock`, which gives the launcher full control of the host Docker daemon. Local use only.
 - **Router Lambda**: the planned `duration_hint` router can reuse `get_launcher("ecs")` / `EcsLauncher` directly.
 

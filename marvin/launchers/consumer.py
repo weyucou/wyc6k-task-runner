@@ -15,7 +15,7 @@ import structlog
 from botocore.exceptions import BotoCoreError, ClientError
 from pydantic import ValidationError
 
-from marvin.launchers import get_launcher
+from marvin.launchers import DockerLauncher, get_launcher
 from marvin.launchers.base import Launcher
 from marvin.models import TaskEnvelope
 
@@ -104,11 +104,23 @@ def _process_message(
         log.info("Launching task")
         heartbeat = functools.partial(extend_visibility, sqs, queue_url, receipt_handle, visibility_timeout)
         result = launcher.launch(envelope, body, heartbeat)
-        if result.success:
-            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
-            log.info("Task launched; message deleted", detail=result.detail)
-        else:
+        if not result.success:
             log.error("Task failed; message left for redelivery", detail=result.detail)
+            return
+        try:
+            sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=receipt_handle)
+        except (BotoCoreError, ClientError) as exc:
+            delete_error = exc
+        else:
+            log.info("Task launched; message deleted", detail=result.detail)
+            return
+        # At-least-once: the message reappears once its visibility expires, and the task runs again.
+        log.error(
+            "Task succeeded but delete_message failed; it will run again",
+            detail=result.detail,
+            error=str(delete_error),
+        )
+        raise delete_error
 
 
 def poll_once(
@@ -150,6 +162,12 @@ def main() -> int:
     except ValueError as exc:
         log.critical("Invalid launcher configuration", error=str(exc))
         return 2
+    if max_messages > 1 and isinstance(launcher, DockerLauncher):
+        # Only the running message is heartbeated; the rest of a batch can reappear while it waits.
+        log.warning(
+            "MAX_MESSAGES > 1 with the docker backend: waiting messages are not heartbeated and can run twice",
+            max_messages=max_messages,
+        )
 
     stop = threading.Event()
     for signum in (signal.SIGTERM, signal.SIGINT):
@@ -157,7 +175,9 @@ def main() -> int:
 
     sqs = get_sqs_client()
     log.info("Launcher started", launcher=type(launcher).__name__, queue_url=queue_url)
-    while not stop.is_set():  # checked between polls, so the current message always finishes
+    # Checked between polls: the launcher waits for a running container and never stops it. A terminal
+    # Ctrl-C still reaches the container, since the `docker run` child shares the foreground process group.
+    while not stop.is_set():
         try:
             poll_once(sqs, launcher, queue_url, visibility_timeout, max_messages)
         except (BotoCoreError, ClientError) as exc:

@@ -11,6 +11,7 @@ import pytest
 import structlog
 from botocore.exceptions import ClientError
 from moto import mock_aws
+from structlog.testing import capture_logs
 
 from marvin.launchers import LaunchResult, get_launcher
 from marvin.launchers.consumer import extend_visibility, main, poll_once
@@ -57,13 +58,20 @@ def _message_counts(sqs: Any, queue_url: str) -> tuple[int, int]:
 class FakeLauncher:
     """Succeeds unless the envelope's task_id is in `failing`; records the raw bodies it launched."""
 
-    def __init__(self, failing: frozenset[str] = frozenset(), heartbeat: bool = False) -> None:
+    def __init__(
+        self,
+        failing: frozenset[str] = frozenset(),
+        heartbeat: bool = False,
+        on_launch: Callable[[], object] = lambda: None,
+    ) -> None:
         self.failing = failing
         self.heartbeat = heartbeat
+        self.on_launch = on_launch  # runs while the "task" runs
         self.launched: list[str] = []
 
     def launch(self, envelope: TaskEnvelope, raw_json: str, heartbeat: Callable[[], None]) -> LaunchResult:
         self.launched.append(raw_json)
+        self.on_launch()
         if self.heartbeat:
             heartbeat()
         failed = envelope.task_id in self.failing
@@ -442,6 +450,19 @@ class TestPollOnce:
         self._poll(sqs_queue, launcher)
         assert launcher.launched == []
 
+    def test_delete_failure_after_success_is_logged_and_raised(self, sqs_queue) -> None:
+        sqs, queue_url = sqs_queue
+        sqs.send_message(QueueUrl=queue_url, MessageBody=_envelope_json())
+        # The queue disappears while the task runs, so delete_message fails after a successful launch.
+        launcher = FakeLauncher(on_launch=lambda: sqs.delete_queue(QueueUrl=queue_url))
+        with capture_logs() as logs, pytest.raises(ClientError):
+            self._poll(sqs_queue, launcher)
+        errors = [entry for entry in logs if entry["log_level"] == "error"]
+        assert len(errors) == 1
+        assert errors[0]["event"].startswith("Task succeeded but delete_message failed")
+        assert errors[0]["detail"] == "exit=0"
+        assert errors[0]["error"]
+
 
 class TestExtendVisibility:
     def test_sets_visibility_of_received_message(self, sqs_queue) -> None:
@@ -506,6 +527,33 @@ class TestMain:
             assert main() == 0
         assert len(polls) == 2  # the SQS error is retried; SIGTERM stops after the current poll
         assert all(args[1] is launcher and args[2] == queue_url for args in polls)
+
+    @pytest.mark.parametrize(
+        ("launcher", "max_messages", "warned"),
+        [
+            (DockerLauncher(image="img"), "1", False),
+            (DockerLauncher(image="img"), "2", True),
+            (
+                EcsLauncher(client=None, cluster="c", task_definition="t", subnets=["s"], security_groups=["g"]),
+                "10",
+                False,
+            ),
+        ],
+        ids=["docker-single", "docker-batch", "ecs-batch"],
+    )
+    def test_warns_when_docker_receives_batches(
+        self, monkeypatch, capsys, moto_region, launcher, max_messages, warned
+    ) -> None:
+        monkeypatch.setenv("SQS_QUEUE_URL", self.QUEUE_URL)
+        monkeypatch.setenv("MAX_MESSAGES", max_messages)
+        with (
+            patch("marvin.launchers.consumer.get_launcher", return_value=launcher),
+            patch("marvin.launchers.consumer.poll_once", side_effect=lambda *_: signal.raise_signal(signal.SIGTERM)),
+        ):
+            assert main() == 0
+        lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+        warnings = [line for line in lines if line["level"] == "warning"]
+        assert [line["max_messages"] for line in warnings] == ([int(max_messages)] if warned else [])
 
     def test_logs_are_json_with_required_fields_and_redaction(self, monkeypatch, capsys) -> None:
         monkeypatch.delenv("SQS_QUEUE_URL", raising=False)
