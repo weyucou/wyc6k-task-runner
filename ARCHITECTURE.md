@@ -24,10 +24,10 @@ Three execution modes share the `marvin/` codebase. Choose based on deployment c
 ECS RunTask (TASK_ENVELOPE_JSON env var)
     ↓
 entrypoint.py
-    1. Parse   — TaskEnvelope.model_validate_json(TASK_ENVELOPE_JSON)
-    2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN / api_key
-    3. Pull    — ContextBundleService.pull(s3_context_prefix) → CustomerContextBundle
-    4. Run     — AgentRunner.chat(user_message, ...)
+    1. Parse   — TaskEnvelope.model_validate_json(TASK_ENVELOPE_JSON) (v1 contract)
+    2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN env var; returns the LLM api_key
+    3. Pull    — ContextBundleService.pull(context_s3_prefix) → CustomerContextBundle
+    4. Run     — AgentRunner(agent=envelope.agent_config(api_key)).chat(envelope.task_prompt(), ...)
     5. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3
     6. Exit    — 0 (success) | 1 (task failure) | 2 (setup/config failure)
 ```
@@ -145,7 +145,7 @@ contract; it must never move into `marvin/`.
 
 | File | Purpose |
 |------|---------|
-| `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
+| `marvin/models.py` | `TaskEnvelope` (v1 wire contract), `AgentSpec`, `TaskAction`, `AgentConfig`, `LLMProvider`, `ToolProfile` — Pydantic models |
 | `marvin/worker.py` | SQS consumer loop entry point (`python -m marvin`) |
 | `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → one agent-worker container per envelope, `COMPUTE_BACKEND=docker\|ecs` |
 | `marvin/runner.py` | `AgentRunner` — builds the prompt and tool list, applies rate limiting, runs the tool-call loop |
@@ -155,13 +155,24 @@ contract; it must never move into `marvin/`.
 | `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
 
+## TaskEnvelope (v1)
+
+`TaskEnvelope` (`marvin/models.py`) is the v1 wire contract, field for field. The contract lives in wyc6k-spec ([docs/architecture.md §TaskEnvelope](https://github.com/weyucou/wyc6k-spec/blob/main/docs/architecture.md#taskenvelope-sqs-message-payload), ADR-008): change it there first.
+
+- **Task**: `repository` (`owner/name`), `issue_url` (an issue or PR in `repository`) and `action` (`develop` | `review`). `task_prompt()` builds the agent's task from them, then appends the optional `user_message`.
+- **`agent` block** (`AgentSpec`): `provider`, `model_name` and `tool_profile` (lowercase) are required; `max_tokens`, `tools_allow` and `tools_deny` are optional. `agent_config(api_key)` builds the runner's `AgentConfig` from it. `provider: bedrock` parses, but has no client until [#80](https://github.com/weyucou/wyc6k-task-runner/issues/80).
+- **No secrets on the wire**: `agent.api_key` is rejected. `CredentialResolver.resolve()` returns the key from `anthropic_api_key_secret_id` or `ANTHROPIC_API_KEY`. Endpoints such as `base_url` come from the runner environment (`OPENAI_BASE_URL` for `vllm`).
+- **Parse errors** name the field in the pydantic `loc`: an unknown `schema_version`, a missing `repository`, an `issue_url` outside `repository`. `entrypoint.py` exits `2`. Unknown fields are ignored.
+- **Runner-internal**: `session_id` (defaults to `task_id`), `conversation_history` and `enable_tools`.
+
 ## TaskEnvelope flow
 
 ```
-SQS → poll_once() → TaskEnvelope.model_validate()
-    → ContextBundleService.pull(s3_prefix)  # fetch CLAUDE.md, SOPs, memories
-    → AgentRunner(agent=AgentConfig, session_id=str)
-    → runner.chat(user_message, ...)
+SQS → poll_once() → TaskEnvelope.model_validate_json()
+    → CredentialResolver.resolve(envelope)  # GITHUB_TOKEN env var; returns the LLM api_key
+    → ContextBundleService.pull(context_s3_prefix)  # fetch CLAUDE.md, SOPs, memories
+    → AgentRunner(agent=envelope.agent_config(api_key), session_id=str)
+    → runner.chat(envelope.task_prompt(), ...)
     → run_tool_loop()  # marvin/loop.py: one client.generate() per turn, tool calls via ToolRegistry
     → result dict → delete SQS message
 ```
@@ -213,8 +224,8 @@ Per-agent allow/deny lists can further restrict or extend a profile.
 - Ollama (local)
 - OpenAI / vLLM
 
-Provider is configured per `AgentConfig` instance.
+Provider and model are set per task, by the envelope's `agent` block.
 
 ## Multi-Tenancy
 
-Customer isolation is enforced via `customer_id` on `AgentConfig`. All operations are scoped to the customer context passed in the `TaskEnvelope`.
+Each `TaskEnvelope` carries its `customer_id`. All operations are scoped to the customer context the envelope names: `context_s3_prefix` and the secret IDs.

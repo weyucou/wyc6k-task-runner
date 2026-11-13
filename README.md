@@ -100,14 +100,18 @@ aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name tasks
 aws --endpoint-url http://localhost:4566 s3 mb s3://local-context
 echo "# Local customer" | aws --endpoint-url http://localhost:4566 s3 cp - s3://local-context/customers/cust-001/CLAUDE.md
 
-# Enqueue a test envelope
+# Enqueue a test envelope (v1 contract; the repository and issue only appear in the prompt here)
 cat > envelope.json <<'EOF'
 {
+  "schema_version": 1,
   "task_id": "local-001",
   "customer_id": "cust-001",
-  "session_id": "local",
-  "agent": {"name": "local-agent", "tool_profile": "minimal"},
-  "s3_context_prefix": "s3://local-context/customers/cust-001/projects/demo",
+  "task_source_id": 1,
+  "repository": "example-org/demo",
+  "issue_url": "https://github.com/example-org/demo/issues/1",
+  "action": "review",
+  "agent": {"provider": "anthropic", "model_name": "claude-sonnet-5-5", "tool_profile": "minimal"},
+  "context_s3_prefix": "s3://local-context/customers/cust-001/projects/demo/",
   "user_message": "Reply with one short sentence.",
   "enable_tools": false
 }
@@ -270,7 +274,7 @@ wyc6k-task-runner/
 │   ├── launchers/          # SQS → one agent-worker container per envelope (docker | ecs)
 │   ├── llm/                # LLM clients (Anthropic, Gemini, OpenAI, Ollama)
 │   ├── tools/              # Tool base classes, registry, built-in and coding tools
-│   ├── models.py           # Pydantic models (AgentConfig, TaskEnvelope)
+│   ├── models.py           # Pydantic models (TaskEnvelope, AgentSpec, AgentConfig)
 │   ├── runner.py           # AgentRunner — prompt, tools, rate limit; runs the loop
 │   ├── loop.py             # run_tool_loop — the tool-call loop for every provider
 │   ├── worker.py           # SQS consumer entry point
