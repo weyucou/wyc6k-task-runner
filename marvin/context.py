@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from pydantic import BaseModel
 
 from marvin.functions import get_s3_client
+from marvin.settings import MEMORY_RECENT_ENTRIES
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,10 @@ class ContextBundleService:
             raise
 
     def pull(self, s3_prefix: str) -> CustomerContextBundle:
-        """Read all context files from S3 and return a CustomerContextBundle.
+        """Read the context files from S3 and return a CustomerContextBundle.
+
+        Reads CLAUDE.md, the SOPs, the project README.md and MEMORY.md, plus the newest
+        MEMORY_RECENT_ENTRIES memory files (newest first), so the reads stay bounded as memory grows.
 
         s3_prefix must point to the project directory, e.g.:
         s3://bucket/{customer_prefix}/projects/{repo_name}/
@@ -74,7 +78,7 @@ class ContextBundleService:
         project_goals = self._read_object(s3, bucket, f"{prefix}/README.md")
         memory_index = self._read_object(s3, bucket, f"{prefix}/MEMORY.md")
 
-        daily_memories: list[MemoryEntry] = []
+        memory_files: list[tuple[dt.date, str, str, bool]] = []  # (date, filename, key, is_weekly_summary)
         memory_prefix = f"{prefix}/memory/"
         for page in paginator.paginate(Bucket=bucket, Prefix=memory_prefix):
             for obj in page.get("Contents", []):
@@ -83,15 +87,17 @@ class ContextBundleService:
                 match = _MEMORY_FILE_PATTERN.search(filename)
                 if match:
                     entry_date = dt.date.fromisoformat(match.group(1))
-                    content = self._read_object(s3, bucket, key)
-                    daily_memories.append(
-                        MemoryEntry(
-                            date=entry_date,
-                            filename=filename,
-                            content=content,
-                            is_weekly_summary=bool(match.group(2)),
-                        )
-                    )
+                    memory_files.append((entry_date, filename, key, bool(match.group(2))))
+        memory_files.sort(reverse=True)  # newest date first
+        daily_memories = [
+            MemoryEntry(
+                date=entry_date,
+                filename=filename,
+                content=self._read_object(s3, bucket, key),
+                is_weekly_summary=is_weekly_summary,
+            )
+            for entry_date, filename, key, is_weekly_summary in memory_files[:MEMORY_RECENT_ENTRIES]
+        ]
 
         return CustomerContextBundle(
             customer_id=customer_id,

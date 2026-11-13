@@ -2,12 +2,14 @@
 """Tests for AgentRunner with mock LLM client."""
 
 import asyncio
+import datetime as dt
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from marvin.context import CustomerContextBundle
+from marvin import runner
+from marvin.context import CustomerContextBundle, MemoryEntry
 from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason
 from marvin.models import AgentConfig, LLMProvider
 from marvin.runner import AgentRunner, _build_context_prefix
@@ -210,6 +212,42 @@ class TestBuildContextPrefix:
         bundle = _make_bundle(claude_md="", sops={}, project_goals="")
         prefix = _build_context_prefix(bundle)
         assert prefix == ""
+
+
+def _memory(day: int, content: str) -> MemoryEntry:
+    date = dt.date(2026, 11, day)
+    return MemoryEntry(date=date, filename=f"{date.isoformat()}.md", content=content)
+
+
+class TestBuildContextPrefixMemory:
+    def test_includes_the_memory_index_after_the_project_goals(self) -> None:
+        prefix = _build_context_prefix(_make_bundle(memory_index="- 2026-11: shipped v1"))
+        assert "# Memory Index\n\n- 2026-11: shipped v1" in prefix
+        assert prefix.index("# Project Goals") < prefix.index("# Memory Index")
+
+    def test_includes_recent_entries_newest_first(self) -> None:
+        bundle = _make_bundle(daily_memories=[_memory(11, "older"), _memory(13, "newest"), _memory(12, "middle")])
+        prefix = _build_context_prefix(bundle)
+        assert prefix.endswith(
+            "# Recent Memory\n\n## 2026-11-13.md\n\nnewest\n\n## 2026-11-12.md\n\nmiddle\n\n## 2026-11-11.md\n\nolder"
+        )
+
+    def test_entries_stop_at_the_first_that_exceeds_the_budget(self, monkeypatch) -> None:
+        monkeypatch.setattr(runner, "MEMORY_CONTEXT_MAX_CHARS", 10)
+        bundle = _make_bundle(
+            memory_index="12345", daily_memories=[_memory(13, "abcd"), _memory(12, "efgh"), _memory(11, "i")]
+        )
+        prefix = _build_context_prefix(bundle)
+        assert "## 2026-11-13.md\n\nabcd" in prefix  # 5 + 4 characters fit in 10
+        assert "## 2026-11-12.md" not in prefix  # 4 more do not
+        assert "## 2026-11-11.md" not in prefix  # an older entry never fills the gap
+
+    def test_memory_index_is_truncated_to_the_budget(self, monkeypatch) -> None:
+        monkeypatch.setattr(runner, "MEMORY_CONTEXT_MAX_CHARS", 4)
+        bundle = _make_bundle(memory_index="123456", daily_memories=[_memory(13, "a")])
+        prefix = _build_context_prefix(bundle)
+        assert prefix.endswith("# Memory Index\n\n1234")
+        assert "# Recent Memory" not in prefix
 
 
 class TestAgentRunnerContextBundle:

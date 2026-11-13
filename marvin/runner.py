@@ -10,16 +10,41 @@ from marvin.llm.factory import create_client_from_agent_config
 from marvin.loop import run_tool_loop
 from marvin.models import AgentConfig
 from marvin.rate_limiter import rate_limiter_registry
+from marvin.settings import MEMORY_CONTEXT_MAX_CHARS
 from marvin.tools import ToolRegistry
 from marvin.tools.builtin import register_builtin_tools
 
 logger = logging.getLogger(__name__)
 
 
+def _build_memory_sections(bundle: CustomerContextBundle) -> list[str]:
+    """Format MEMORY.md and the recent memory entries within MEMORY_CONTEXT_MAX_CHARS characters of memory text.
+
+    MEMORY.md comes first, truncated to the budget. Entries follow newest first; the first entry
+    that does not fit in the rest of the budget ends the list.
+    """
+    budget = MEMORY_CONTEXT_MAX_CHARS
+    sections = []
+    memory_index = bundle.memory_index[:budget]
+    if memory_index:
+        budget -= len(memory_index)
+        sections.append(f"# Memory Index\n\n{memory_index}")
+    entries = []
+    for entry in sorted(bundle.daily_memories, key=lambda item: (item.date, item.filename), reverse=True):
+        if len(entry.content) > budget:
+            break
+        budget -= len(entry.content)
+        entries.append(f"## {entry.filename}\n\n{entry.content}")
+    if entries:
+        sections.append("# Recent Memory\n\n" + "\n\n".join(entries))
+    return sections
+
+
 def _build_context_prefix(bundle: CustomerContextBundle) -> str:
     """Build a markdown context block from the fields of a CustomerContextBundle.
 
-    Includes claude_md, sops (each file as a subsection), and project_goals.
+    Includes claude_md, sops (each file as a subsection), project_goals, and the
+    memory index and recent memory entries (bounded by MEMORY_CONTEXT_MAX_CHARS).
     """
     parts = []
     if bundle.claude_md:
@@ -29,6 +54,7 @@ def _build_context_prefix(bundle: CustomerContextBundle) -> str:
         parts.append(f"# Standard Operating Procedures\n\n{sops_sections}")
     if bundle.project_goals:
         parts.append(f"# Project Goals\n\n{bundle.project_goals}")
+    parts.extend(_build_memory_sections(bundle))
     return "\n\n".join(parts)
 
 
@@ -59,8 +85,8 @@ class AgentRunner:
             register_builtins: Whether to register built-in tools.
             session_id: Optional session ID for memory search context.
             context_bundle: Optional customer context bundle; when set, its
-                claude_md, sops, and project_goals are prepended to every
-                system prompt passed to run().
+                claude_md, sops, project_goals and memory are prepended to
+                every system prompt passed to run().
         """
         self.agent = agent
         self.registry = registry or ToolRegistry()
