@@ -37,23 +37,6 @@ class ToolCall:
 
 
 @dataclass
-class ToolResultMessage:
-    """Represents a tool result to send back to the LLM."""
-
-    tool_call_id: str
-    content: str
-    is_error: bool = False
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary."""
-        return {
-            "tool_call_id": self.tool_call_id,
-            "content": self.content,
-            "is_error": self.is_error,
-        }
-
-
-@dataclass
 class LLMMessage:
     """A message in an LLM conversation."""
 
