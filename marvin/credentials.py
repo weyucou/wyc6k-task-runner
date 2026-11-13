@@ -28,7 +28,7 @@ def _fetch_secret(secret_id: str) -> str:
         parsed = json.loads(raw)
         if isinstance(parsed, dict) and "value" in parsed:
             return parsed["value"]
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         pass
     return raw
 

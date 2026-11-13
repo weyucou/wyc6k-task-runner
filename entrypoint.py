@@ -27,16 +27,18 @@ from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
 
-_SENSITIVE_KEYS = frozenset({
-    "password",
-    "token",
-    "secret",
-    "ssn",
-    "email",
-    "credit_card",
-    "authorization",
-    "api_key",
-})
+_SENSITIVE_KEYS = frozenset(
+    {
+        "password",
+        "token",
+        "secret",
+        "ssn",
+        "email",
+        "credit_card",
+        "authorization",
+        "api_key",
+    }
+)
 
 
 def _scrub_sensitive_fields(
