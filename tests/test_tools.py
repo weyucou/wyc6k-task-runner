@@ -6,17 +6,21 @@ import base64
 import http.client
 import inspect
 import io
+import os
 import tempfile
 import threading
 import time
 import urllib.error
+from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anthropic
 import httpx
 import pytest
 
+from marvin.tools import coding
 from marvin.tools.builtin import (
     BrowserTool,
     CalculatorTool,
@@ -38,6 +42,9 @@ from marvin.tools.coding import (
     WriteTool,
 )
 from marvin.tools.registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # ---- CalculatorTool ----
 
@@ -687,12 +694,107 @@ class TestFileTools:
 # ---- ExecTool / ProcessTool ----
 
 
+def _alive(pid: int) -> bool:
+    """True while pid runs; a zombie (exited, not yet reaped by its parent) counts as dead."""
+    try:
+        os.kill(pid, 0)
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except ProcessLookupError, FileNotFoundError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def _dies_within(pid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while _alive(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def _read_pid(path: Path) -> int:
+    """Wait for a background shell's `echo $! > path` to land, then return the pid."""
+    deadline = time.monotonic() + 5
+    while not (path.exists() and path.read_text(encoding="utf-8").endswith("\n")):
+        assert time.monotonic() < deadline, f"{path} was never written"
+        time.sleep(0.01)
+    return int(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def blocking_stdin() -> Iterator[None]:
+    """Point fd 0 at an empty pipe that stays open, so a child that inherits stdin blocks reading it."""
+    read_fd, write_fd = os.pipe()
+    saved_stdin = os.dup(0)
+    os.dup2(read_fd, 0)
+    yield
+    os.dup2(saved_stdin, 0)
+    for fd in (saved_stdin, read_fd, write_fd):
+        os.close(fd)
+
+
 class TestExecTool:
     def test_runs_in_the_expanded_cwd(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setenv("HOME", str(tmp_path))
         result = asyncio.run(ExecTool().execute(command="pwd -P", cwd="~"))
         assert result.error is None
         assert result.output.strip() == str(tmp_path.resolve())
+
+    def test_timeout_kills_the_process_group(self, tmp_path) -> None:
+        start = time.monotonic()
+        result = asyncio.run(ExecTool().execute(command="sleep 30 & echo $! > pid; wait", cwd=str(tmp_path), timeout=1))
+        assert time.monotonic() - start < 3
+        assert "timed out" in result.error
+        assert "larger timeout" in result.error
+        assert result.error in result.output  # the LLM clients forward only `output` to the model
+        assert not _alive(int((tmp_path / "pid").read_text(encoding="utf-8")))
+
+    def test_timeout_escalates_to_sigkill(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(coding, "_KILL_GRACE_SECONDS", 0.2)
+        start = time.monotonic()
+        result = asyncio.run(
+            ExecTool().execute(command="trap '' TERM; sleep 30 & echo $! > pid; wait", cwd=str(tmp_path), timeout=1)
+        )
+        assert "timed out" in result.error
+        assert _dies_within(int((tmp_path / "pid").read_text(encoding="utf-8")), 0.5)
+        assert time.monotonic() - start < 3
+
+    def test_cancel_kills_the_process_group(self, tmp_path) -> None:
+        command = ExecTool().execute(command="sleep 30 & echo $! > pid; wait", cwd=str(tmp_path), timeout=60)
+        with pytest.raises(TimeoutError):  # wait_for cancels the tool call
+            asyncio.run(asyncio.wait_for(command, 0.5))
+        assert not _alive(_read_pid(tmp_path / "pid"))
+
+    def test_stdin_is_closed(self, blocking_stdin) -> None:
+        start = time.monotonic()
+        result = asyncio.run(ExecTool().execute(command="cat", timeout=10))
+        assert time.monotonic() - start < 2
+        assert result.data.get("return_code") == 0
+
+    def test_backgrounded_child_does_not_hang(self, tmp_path) -> None:
+        start = time.monotonic()
+        result = asyncio.run(
+            ExecTool().execute(command="sleep 30 & echo $! > pid; echo done", cwd=str(tmp_path), timeout=10)
+        )
+        assert time.monotonic() - start < 2
+        assert result.data.get("return_code") == 0
+        assert result.data["stdout"] == "done\n"
+        assert "`process` tool" in result.output
+        assert not _alive(int((tmp_path / "pid").read_text(encoding="utf-8")))
+
+    def test_exit_code_preserved_with_background_child(self) -> None:
+        start = time.monotonic()
+        result = asyncio.run(ExecTool().execute(command="sleep 30 & exit 3", timeout=10))
+        assert time.monotonic() - start < 2
+        assert result.data.get("return_code") == 3
+        assert result.error == "Command exited with code 3."
+
+    def test_default_timeout_is_minutes(self) -> None:
+        [param] = [p for p in ExecTool.parameters if p.name == "timeout"]
+        assert param.default == 120
+        assert "larger" in param.description
+        assert inspect.signature(ExecTool.execute).parameters["timeout"].default == 120
 
 
 class TestProcessTool:
@@ -715,6 +817,60 @@ class TestProcessTool:
         finally:
             asyncio.run(tool.execute(action="stop", session_id="stream"))
             proc.wait(timeout=5)
+
+    def test_output_returns_only_new_lines(self) -> None:
+        tool = ProcessTool()
+        asyncio.run(tool.execute(action="start", session_id="drain", command="echo one"))
+        try:
+            _BACKGROUND_PROCESSES["drain"]["thread"].join(timeout=5)  # the reader stops at EOF
+            first = asyncio.run(tool.execute(action="output", session_id="drain"))
+            second = asyncio.run(tool.execute(action="output", session_id="drain"))
+        finally:
+            asyncio.run(tool.execute(action="stop", session_id="drain"))
+        assert first.output == "one\n"
+        assert second.output == ""
+
+    def test_buffer_is_bounded(self, monkeypatch) -> None:
+        monkeypatch.setattr(coding, "_PROCESS_BUFFER_MAX_LINES", 10)
+        tool = ProcessTool()
+        asyncio.run(tool.execute(action="start", session_id="seq", command="seq 1 100"))
+        try:
+            _BACKGROUND_PROCESSES["seq"]["thread"].join(timeout=5)
+            output = asyncio.run(tool.execute(action="output", session_id="seq")).output
+        finally:
+            asyncio.run(tool.execute(action="stop", session_id="seq"))
+        assert output.splitlines() == [str(n) for n in range(91, 101)]
+
+    def test_start_rejects_a_session_id_in_use(self) -> None:
+        tool = ProcessTool()
+        asyncio.run(tool.execute(action="start", session_id="dup", command="exec sleep 30"))
+        proc = _BACKGROUND_PROCESSES["dup"]["proc"]
+        try:
+            again = asyncio.run(tool.execute(action="start", session_id="dup", command="exec sleep 30"))
+            assert _BACKGROUND_PROCESSES["dup"]["proc"] is proc
+        finally:
+            asyncio.run(tool.execute(action="stop", session_id="dup"))
+        assert "already exists" in again.error
+
+    def test_stop_kills_the_group(self, tmp_path) -> None:
+        tool = ProcessTool()
+        command = "sleep 30 & echo $! > pid; wait"
+        asyncio.run(tool.execute(action="start", session_id="group", command=command, cwd=str(tmp_path)))
+        pid = _read_pid(tmp_path / "pid")
+        result = asyncio.run(tool.execute(action="stop", session_id="group"))
+        assert result.error is None
+        assert "group" not in _BACKGROUND_PROCESSES
+        assert not _alive(pid)
+
+    def test_stop_background_processes_terminates_all(self, tmp_path) -> None:
+        tool = ProcessTool()
+        for name in ("a", "b"):
+            command = f"sleep 30 & echo $! > {name}; wait"
+            asyncio.run(tool.execute(action="start", session_id=name, command=command, cwd=str(tmp_path)))
+        pids = [_read_pid(tmp_path / name) for name in ("a", "b")]
+        coding.stop_background_processes()
+        assert _BACKGROUND_PROCESSES == {}
+        assert not any(_alive(pid) for pid in pids)
 
 
 # ---- BrowserAutomationTool ----

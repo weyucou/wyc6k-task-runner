@@ -145,10 +145,9 @@ class LLMResponse:
 class BaseLLMClient(ABC):
     """Abstract base class for LLM provider clients.
 
-    Implementations must support:
-    - Basic text generation
-    - Tool/function calling
-    - Streaming (optional)
+    A client makes one `generate` call per request: it converts the messages and tools
+    to the provider's format and parses the reply into an `LLMResponse`. The tool-call
+    loop is `marvin.loop.run_tool_loop`.
     """
 
     def __init__(
@@ -194,39 +193,6 @@ class BaseLLMClient(ABC):
 
         Returns:
             LLMResponse with the generated content.
-        """
-
-    @abstractmethod
-    async def generate_with_tools(
-        self,
-        messages: list[LLMMessage],
-        tools: list[dict[str, Any]],
-        tool_executor: Any,  # ToolRegistry or callable
-        *,
-        system_prompt: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 4096,
-        max_iterations: int = 10,
-    ) -> tuple[LLMResponse, list[LLMMessage]]:
-        """Generate a response with automatic tool execution.
-
-        This method handles the tool calling loop:
-        1. Send messages to LLM
-        2. If LLM requests tool calls, execute them
-        3. Send tool results back to LLM
-        4. Repeat until LLM returns final response
-
-        Args:
-            messages: Conversation messages.
-            tools: List of tool definitions.
-            tool_executor: Registry or callable to execute tools.
-            system_prompt: Optional system prompt.
-            temperature: Sampling temperature.
-            max_tokens: Maximum tokens to generate.
-            max_iterations: Maximum tool calling iterations.
-
-        Returns:
-            Tuple of (final response, updated message history).
         """
 
     def get_provider_name(self) -> str:

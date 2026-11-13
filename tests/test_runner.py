@@ -8,11 +8,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from marvin.context import CustomerContextBundle
-from marvin.llm.base import LLMMessage, LLMResponse, StopReason
+from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason
 from marvin.models import AgentConfig, LLMProvider
 from marvin.runner import AgentRunner, _build_context_prefix
 from marvin.tools import ToolRegistry
 from marvin.tools.builtin import CalculatorTool
+from tests.fake_llm import FakeLLMClient, fake_text, fake_tool_call, fake_tool_calls
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -93,9 +94,6 @@ class TestAgentRunnerChat:
         mock_client = MagicMock()
         mock_response = _make_response(response_content)
         mock_client.generate = AsyncMock(return_value=mock_response)
-        mock_client.generate_with_tools = AsyncMock(
-            return_value=(mock_response, [LLMMessage.user("Hi"), LLMMessage.assistant(response_content)])
-        )
         runner._client = mock_client
         return mock_client
 
@@ -149,6 +147,31 @@ class TestAgentRunnerChat:
         asyncio.run(runner.chat("Hi", enable_tools=False))
 
 
+class TestAgentRunnerToolLoop:
+    def test_run_drives_the_tool_loop_with_agent_settings(self) -> None:
+        agent = _make_agent(system_prompt="You are helpful.", temperature=0.2, max_tokens=512)
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        runner.register_tool(CalculatorTool())
+        client = FakeLLMClient(
+            [fake_tool_calls(fake_tool_call("calculator", {"expression": "2 + 2"})), fake_text("2 + 2 = 4")]
+        )
+        runner._client = client
+
+        response, history = asyncio.run(
+            runner.run([LLMMessage.user("What is 2 + 2?")], enable_tools=True, max_tool_iterations=1)
+        )
+
+        assert response.content == "2 + 2 = 4"
+        assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL]
+        assert history[-1].content == "4"  # CalculatorTool ran through runner.registry
+        tools = runner.registry.to_anthropic_tools()
+        # max_tool_iterations=1 makes the second call the capped final call, which has no tools.
+        assert [(r.system_prompt, r.tools, r.temperature, r.max_tokens) for r in client.requests] == [
+            ("You are helpful.", tools, 0.2, 512),
+            ("You are helpful.", None, 0.2, 512),
+        ]
+
+
 def _make_bundle(**kwargs: Any) -> CustomerContextBundle:
     defaults = {
         "customer_id": "acme",
@@ -194,9 +217,6 @@ class TestAgentRunnerContextBundle:
         mock_client = MagicMock()
         mock_response = _make_response(response_content)
         mock_client.generate = AsyncMock(return_value=mock_response)
-        mock_client.generate_with_tools = AsyncMock(
-            return_value=(mock_response, [LLMMessage.user("Hi"), LLMMessage.assistant(response_content)])
-        )
         runner._client = mock_client
         return mock_client
 

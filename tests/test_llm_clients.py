@@ -16,6 +16,7 @@ from marvin.llm.anthropic_client import AnthropicClient
 from marvin.llm.base import LLMMessage, StopReason
 from marvin.llm.gemini_client import GeminiClient
 from marvin.llm.openai_client import OpenAIClient
+from marvin.loop import run_tool_loop
 from marvin.tools import ToolRegistry
 from marvin.tools.builtin import CalculatorTool
 
@@ -66,13 +67,14 @@ class TestAnthropicClient:
         _assert_sdk_accepts(AsyncAnthropic(api_key="x").messages.create, kwargs)
 
     @pytest.mark.asyncio
-    async def test_generate_with_tools_omits_sampling_params(self) -> None:
+    async def test_tool_loop_omits_sampling_params(self) -> None:
         # One tool round, then the max-iterations final call: covers both generate() call sites.
         client, create = _anthropic_client(ANTHROPIC_TOOL_REPLY, ANTHROPIC_TEXT_REPLY)
         registry = ToolRegistry()
         registry.register(CalculatorTool())
 
-        response, _ = await client.generate_with_tools(
+        response, _ = await run_tool_loop(
+            client,
             MESSAGES,
             registry.to_anthropic_tools(),
             registry,
