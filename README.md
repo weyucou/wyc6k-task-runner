@@ -261,7 +261,8 @@ wyc6k-task-runner/
 │   ├── llm/                # LLM clients (Anthropic, Gemini, OpenAI, Ollama)
 │   ├── tools/              # Tool base classes, registry, built-in and coding tools
 │   ├── models.py           # Pydantic models (AgentConfig, TaskEnvelope)
-│   ├── runner.py           # AgentRunner — tool-call loop
+│   ├── runner.py           # AgentRunner — prompt, tools, rate limit; runs the loop
+│   ├── loop.py             # run_tool_loop — the tool-call loop for every provider
 │   ├── worker.py           # SQS consumer entry point
 │   ├── context.py          # ContextBundleService — reads from S3
 │   └── rate_limiter.py     # Thread-safe sliding-window rate limiter

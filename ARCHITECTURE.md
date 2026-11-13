@@ -123,7 +123,8 @@ The workflow at `.github/workflows/build-image.yml` performs the same five steps
 | `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — Pydantic models |
 | `marvin/worker.py` | SQS consumer loop entry point (`python -m marvin`) |
 | `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → one agent-worker container per envelope, `COMPUTE_BACKEND=docker\|ecs` |
-| `marvin/runner.py` | `AgentRunner` — orchestrates tool-call loop with rate limiting |
+| `marvin/runner.py` | `AgentRunner` — builds the prompt and tool list, applies rate limiting, runs the tool-call loop |
+| `marvin/loop.py` | `run_tool_loop()` — the tool-call loop, shared by every provider client |
 | `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
 | `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
 | `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools |
@@ -136,7 +137,7 @@ SQS → poll_once() → TaskEnvelope.model_validate()
     → ContextBundleService.pull(s3_prefix)  # fetch CLAUDE.md, SOPs, memories
     → AgentRunner(agent=AgentConfig, session_id=str)
     → runner.chat(user_message, ...)
-    → LLM client (generate / generate_with_tools loop)
+    → run_tool_loop()  # marvin/loop.py: one client.generate() per turn, tool calls via ToolRegistry
     → result dict → delete SQS message
 ```
 
@@ -146,7 +147,7 @@ SQS → poll_once() → TaskEnvelope.model_validate()
 
 ## AgentRunner
 
-`marvin/runner.py` — orchestrates the tool-call loop.
+`marvin/runner.py` — builds the system prompt and tool list, then runs the tool-call loop: `run_tool_loop()` in `marvin/loop.py`, shared by every provider client. Clients implement single-call `generate()` only.
 
 - Up to 10 iterations per task
 - Rate limiting between LLM calls
