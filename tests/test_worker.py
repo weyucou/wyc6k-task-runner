@@ -2,6 +2,7 @@
 """Tests for marvin.worker — the in-process SQS worker loop."""
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import signal
@@ -12,11 +13,14 @@ import boto3
 import pytest
 from moto import mock_aws
 
+import entrypoint
 from marvin import worker
+from marvin.context import CustomerContextBundle, MemoryEntry
 from marvin.models import AgentConfig, TaskEnvelope
+from tests.fake_llm import FakeLLMClient, fake_text
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Coroutine, Iterator
 
 LEAK_MARKER = "sk-ant-LEAKMARKER"
 # No user_message, and agent.api_key ends the JSON: pydantic's truncated input_value keeps the input's tail.
@@ -92,6 +96,55 @@ class TestProcessEnvelope:
             with pytest.raises(RuntimeError, match="LLM timeout"):
                 asyncio.run(worker.process_envelope(envelope))
         mock_stop.assert_called_once_with()
+
+
+def _context_bundle() -> CustomerContextBundle:
+    return CustomerContextBundle(
+        customer_id="cust-001",
+        claude_md="Customer rules.",
+        sops={"deploy.md": "Deploy SOP."},
+        project_goals="Project goals.",
+        memory_index="Memory index.",
+        daily_memories=[MemoryEntry(date=dt.date(2026, 11, 12), filename="2026-11-12.md", content="Previous run.")],
+    )
+
+
+def _system_prompt_sent(run: Coroutine[Any, Any, Any]) -> str | None:
+    """Run `run` against a scripted model and return the system prompt of its one request."""
+    client = FakeLLMClient([fake_text("done")])
+    with patch("marvin.runner.create_client_from_agent_config", return_value=client):
+        asyncio.run(run)
+    [request] = client.requests
+    return request.system_prompt
+
+
+class TestProcessEnvelopeSystemPrompt:
+    def _envelope(self) -> TaskEnvelope:
+        return TaskEnvelope(
+            task_id="task-001",
+            customer_id="cust-001",
+            session_id="sess-001",
+            agent=AgentConfig(name="test-agent", system_prompt="Agent prompt."),
+            s3_context_prefix="s3://bucket/customers/cust-001/projects/repo",
+            user_message="Hello, agent!",
+        )
+
+    def test_includes_the_context_bundle_and_the_agent_prompt(self) -> None:
+        with patch("marvin.worker.ContextBundleService") as service_cls:
+            service_cls.return_value.pull.return_value = _context_bundle()
+            prompt = _system_prompt_sent(worker.process_envelope(self._envelope()))
+        assert prompt is not None
+        assert "Agent prompt." in prompt
+        for text in ("Customer rules.", "Deploy SOP.", "Project goals.", "Memory index.", "Previous run."):
+            assert text in prompt
+            assert prompt.index(text) < prompt.index("Agent prompt.")
+
+    def test_matches_the_entrypoint_system_prompt(self) -> None:
+        envelope, bundle = self._envelope(), _context_bundle()
+        with patch("marvin.worker.ContextBundleService") as service_cls:
+            service_cls.return_value.pull.return_value = bundle
+            worker_prompt = _system_prompt_sent(worker.process_envelope(envelope))
+        assert worker_prompt == _system_prompt_sent(entrypoint._run_agent(envelope, bundle))
 
 
 class TestMain:
