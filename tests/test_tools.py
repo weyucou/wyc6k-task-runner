@@ -2,21 +2,17 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
-import base64
 import http.client
 import inspect
 import io
 import os
-import tempfile
 import threading
 import time
 import urllib.error
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
 import httpx
 import pytest
 
@@ -30,13 +26,10 @@ from marvin.tools.builtin import (
 )
 from marvin.tools.coding import (
     _BACKGROUND_PROCESSES,
-    AskccRunTool,
-    BrowserAutomationTool,
     EditTool,
     ExecTool,
     GitHubIssueTool,
     GitHubPRTool,
-    ImageTool,
     ProcessTool,
     ReadTool,
     WriteTool,
@@ -84,6 +77,7 @@ class TestCalculatorToolValidation:
     def test_execute_disallowed_chars(self) -> None:
         result = asyncio.run(self.tool.execute(expression="__import__('os')"))
         assert result.error is not None
+
 
 
 # ---- DateTimeTool ----
@@ -538,119 +532,6 @@ class TestGitHubPRTool:
         assert "gh exited with code 1" in result.error
 
 
-# ---- AskccRunTool ----
-
-
-class TestAskccRunTool:
-    def setup_method(self) -> None:
-        self.tool = AskccRunTool()
-
-    def test_require_approval_is_true(self) -> None:
-        assert self.tool.require_approval is True
-
-    def test_missing_required_action(self) -> None:
-        is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
-        assert not is_valid
-        assert "action" in error
-
-    def test_missing_required_issue_url(self) -> None:
-        is_valid, error = self.tool.validate_params({"action": "prepare"})
-        assert not is_valid
-        assert "issue_url" in error
-
-    def test_invalid_action_enum(self) -> None:
-        is_valid, error = self.tool.validate_params(
-            {"action": "deploy", "issue_url": "https://github.com/o/r/issues/1"}
-        )
-        assert not is_valid
-        assert "must be one of" in error.lower()
-
-    def test_valid_params_each_action(self) -> None:
-        for action in ("prepare", "develop", "review", "diagnose", "explore", "plan"):
-            is_valid, error = self.tool.validate_params(
-                {"action": action, "issue_url": "https://github.com/o/r/issues/1"}
-            )
-            assert is_valid, f"action={action} should be valid, got error: {error}"
-            assert error is None
-
-    def test_missing_askcc_cli_returns_error(self) -> None:
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result = asyncio.run(self.tool.execute(action="prepare", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is not None
-        assert "'askcc' CLI not found" in result.error
-
-    def test_nonzero_exit_returns_error(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 1
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"something went wrong"))
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is not None
-        assert "askcc exited with code 1" in result.error
-
-    def test_success(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="plan", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is None
-        assert "done" in result.output
-
-    def test_timeout_terminates_process_and_returns_error(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = None
-        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
-        mock_proc.wait = AsyncMock(return_value=None)
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
-        mock_proc.terminate.assert_called_once()
-        assert result.error is not None
-        assert "timed out" in result.error
-
-    def test_config_timeout_override(self) -> None:
-        custom_timeout = 600
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-        with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait,
-        ):
-            asyncio.run(
-                self.tool.execute(
-                    action="review",
-                    issue_url="https://github.com/o/r/issues/1",
-                    config={"timeout": custom_timeout},
-                )
-            )
-        _, kwargs = mock_wait.call_args
-        assert kwargs.get("timeout") == custom_timeout
-
-
-# ---- ImageTool ----
-
-
-class TestImageToolVision:
-    def test_call_vision_returns_text_after_non_text_block(self) -> None:
-        reply = SimpleNamespace(content=[SimpleNamespace(type="thinking"), SimpleNamespace(type="text", text="A cat.")])
-        sdk_create = anthropic.Anthropic(api_key="x").messages.create
-        with patch("anthropic.Anthropic") as client_cls:
-            create = client_cls.return_value.messages.create
-            create.return_value = reply
-            result = ImageTool()._call_vision("key", "aGk=", "image/png", "Describe this image.")
-        assert result == "A cat."
-        inspect.signature(sdk_create).bind(**create.call_args.kwargs)  # request fits the installed SDK
-
-    def test_load_image_reads_a_local_file_under_home(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        raw = b"\x89PNG\r\n\x1a\n" + bytes(8)
-        (tmp_path / "pic.png").write_bytes(raw)
-        encoded, media_type = asyncio.run(ImageTool()._load_image("~/pic.png"))
-        assert base64.b64decode(encoded) == raw
-        assert media_type == "image/png"
-
-
 # ---- File tools: read / write / edit ----
 
 
@@ -871,24 +752,3 @@ class TestProcessTool:
         coding.stop_background_processes()
         assert _BACKGROUND_PROCESSES == {}
         assert not any(_alive(pid) for pid in pids)
-
-
-# ---- BrowserAutomationTool ----
-
-
-class TestBrowserAutomationTool:
-    def test_screenshot_defaults_to_the_system_temp_dir(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-        page = AsyncMock()
-        browser = AsyncMock()
-        browser.new_page.return_value = page
-        playwright = MagicMock()
-        playwright.chromium.launch = AsyncMock(return_value=browser)
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=playwright)
-        session.__aexit__ = AsyncMock(return_value=None)
-        with patch("marvin.tools.coding.async_playwright", return_value=session):
-            result = asyncio.run(BrowserAutomationTool().execute(action="screenshot"))
-        expected = str(tmp_path / "screenshot.png")
-        page.screenshot.assert_awaited_once_with(path=expected, full_page=True)
-        assert result.data == {"path": expected}

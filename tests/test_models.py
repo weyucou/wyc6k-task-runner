@@ -71,6 +71,10 @@ class TestAgentConfigGetAllowedTools:
         assert "exec" in allowed
         assert "send_email" not in allowed
 
+    def test_coding_profile_omits_removed_tools(self) -> None:
+        agent = AgentConfig(name="a", tool_profile=ToolProfile.CODING)
+        assert agent.get_allowed_tools(["sessions_spawn", "sessions_send", "image", "browser", "askcc_run"]) == []
+
     def test_messaging_profile_filters(self) -> None:
         agent = AgentConfig(name="a", tool_profile=ToolProfile.MESSAGING)
         available = ["send_email", "slack_message", "read", "exec"]

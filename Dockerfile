@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
 # Multi-stage build for the Fargate one-shot agent worker.
-# Builder installs only the `fargate` dependency-group + askcc into a venv;
+# Builder installs only the `fargate` dependency-group into a venv;
 # runtime copies that venv and adds the CLI tools the agent shells out to.
 
 # ---------- Builder ----------
@@ -25,11 +25,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     uv sync --frozen --no-dev --only-group fargate --no-install-project
 
-# askcc v0.2.8 pinned — installed into the same venv so it ships in /app/.venv
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /app/.venv/bin/python \
-        https://github.com/monkut/askcc-cli/archive/refs/tags/v0.2.8.tar.gz
-
 # ---------- Runtime ----------
 FROM python:3.14-slim
 
@@ -51,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy the prebuilt venv (fargate runtime deps + askcc) from builder
+# Copy the prebuilt venv (fargate runtime deps) from builder
 COPY --from=builder /app/.venv /app/.venv
 
 ENV PATH="/app/.venv/bin:$PATH" \
