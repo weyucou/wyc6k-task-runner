@@ -39,7 +39,9 @@ def check_url(url: str) -> None:
     (RFC 1918) are allowed. The HTTP client resolves the host again to connect, so DNS
     rebinding can pass this check.
     """
-    parts = urlsplit(url)
+    # Browsers read a backslash in an http(s) URL as a slash: `http://169.254.169.254\@example.com/`
+    # goes to 169.254.169.254. Check the host a browser would use.
+    parts = urlsplit(url.replace("\\", "/"))
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise UnsafeURLError(f"Only http and https URLs with a host can be fetched: {url}")
     blocked = sorted(address for address in _resolve(parts.hostname) if _is_blocked(address))

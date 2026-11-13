@@ -56,6 +56,8 @@ class TestCheckUrl:
             "http://[fd00:ec2::254]/latest/meta-data/",  # EC2 IMDS over IPv6
             "http://0.0.0.0/",
             "http://[::ffff:169.254.169.254]/",  # IPv4-mapped IMDS
+            "http://2852039166/",  # IMDS as one decimal number
+            "http://169.254.169.254\\@example.com/",  # browsers read the backslash as a slash: host is IMDS
         ],
     )
     def test_rejects_loopback_link_local_and_metadata_addresses(self, url: str) -> None:
