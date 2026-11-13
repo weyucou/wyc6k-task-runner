@@ -69,18 +69,14 @@ class AnthropicClient(BaseLLMClient):
 
             if msg.role == MessageRole.TOOL:
                 # Tool results use tool_result content block
-                result.append(
-                    {
-                        "role": AnthropicRoles.USER.value,
-                        "content": [
-                            {
-                                "type": AnthropicContentTypes.TOOL_RESULT.value,
-                                "tool_use_id": msg.tool_call_id,
-                                "content": msg.content,
-                            }
-                        ],
-                    }
-                )
+                block: dict[str, Any] = {
+                    "type": AnthropicContentTypes.TOOL_RESULT.value,
+                    "tool_use_id": msg.tool_call_id,
+                    "content": msg.content,
+                }
+                if msg.is_error:
+                    block["is_error"] = True
+                result.append({"role": AnthropicRoles.USER.value, "content": [block]})
             elif msg.role == MessageRole.ASSISTANT and msg.tool_calls:
                 # Assistant message with tool calls
                 content: list[dict[str, Any]] = []

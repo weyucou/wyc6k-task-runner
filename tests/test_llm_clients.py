@@ -13,7 +13,7 @@ from google.genai import types as genai_types
 from openai import AsyncOpenAI
 
 from marvin.llm.anthropic_client import AnthropicClient
-from marvin.llm.base import LLMMessage, StopReason
+from marvin.llm.base import LLMMessage, StopReason, ToolCall
 from marvin.llm.gemini_client import GeminiClient
 from marvin.llm.openai_client import OpenAIClient
 from marvin.loop import run_tool_loop
@@ -27,6 +27,28 @@ MESSAGES = [LLMMessage.user("What is 2 + 2?")]
 def _assert_sdk_accepts(sdk_method: Any, kwargs: dict[str, Any]) -> None:
     """Raise TypeError when the installed SDK method has no parameter for a request kwarg."""
     inspect.signature(sdk_method).bind(**kwargs)
+
+
+def _tool_results_turn() -> list[LLMMessage]:
+    """A conversation whose last turn called two tools: the first succeeded, the second failed."""
+    calls = [
+        ToolCall(id="call_1", name="calculator", arguments={"expression": "2 + 2"}),
+        ToolCall(id="call_2", name="calculator", arguments={"expression": "1 / 0"}),
+    ]
+    return [
+        *MESSAGES,
+        LLMMessage.assistant("", calls),
+        LLMMessage.tool_result("call_1", "4", name="calculator"),
+        LLMMessage.tool_result("call_2", "Error: division by zero", name="calculator", is_error=True),
+    ]
+
+
+class TestLLMMessage:
+    def test_to_dict_flags_only_failed_tool_results(self) -> None:
+        *_, ok, failed = _tool_results_turn()
+
+        assert "is_error" not in ok.to_dict()
+        assert failed.to_dict()["is_error"] is True
 
 
 def _anthropic_message(block: SimpleNamespace, stop_reason: str) -> SimpleNamespace:
@@ -87,6 +109,18 @@ class TestAnthropicClient:
         for call in create.call_args_list:
             assert not SAMPLING_PARAMS & call.kwargs.keys()
 
+    @pytest.mark.asyncio
+    async def test_failed_tool_result_sets_is_error(self) -> None:
+        client, create = _anthropic_client(ANTHROPIC_TEXT_REPLY)
+
+        await client.generate(_tool_results_turn())
+
+        *_, ok, failed = create.call_args.kwargs["messages"]
+        assert ok["content"] == [{"type": "tool_result", "tool_use_id": "call_1", "content": "4"}]
+        assert failed["content"] == [
+            {"type": "tool_result", "tool_use_id": "call_2", "content": "Error: division by zero", "is_error": True}
+        ]
+
     def test_default_model(self, monkeypatch) -> None:
         monkeypatch.delenv("DEFAULT_ANTHROPIC_MODEL", raising=False)
         assert AnthropicClient().model == "claude-sonnet-5-5"
@@ -125,6 +159,21 @@ class TestGeminiClient:
         assert kwargs["config"]["temperature"] == 0.3
         _assert_sdk_accepts(genai.Client(api_key="x").aio.models.generate_content, kwargs)
         genai_types.GenerateContentConfig.model_validate(kwargs["config"])
+
+    @pytest.mark.asyncio
+    async def test_failed_tool_result_is_sent_as_an_error(self) -> None:
+        client, generate_content = _gemini_client()
+
+        await client.generate(_tool_results_turn())
+
+        contents = generate_content.call_args.kwargs["contents"]
+        *_, ok, failed = contents
+        assert ok["parts"] == [{"function_response": {"name": "calculator", "response": {"result": "4"}}}]
+        assert failed["parts"] == [
+            {"function_response": {"name": "calculator", "response": {"error": "Error: division by zero"}}}
+        ]
+        for content in contents:
+            genai_types.Content.model_validate(content)
 
     def test_default_model(self, monkeypatch) -> None:
         monkeypatch.delenv("DEFAULT_GEMINI_MODEL", raising=False)
