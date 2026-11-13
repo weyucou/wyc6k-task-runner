@@ -86,14 +86,16 @@ class ToolRegistry:
         """
         tool = self.get(name)
         if not tool:
-            return ToolResult.from_error(f"Tool '{name}' not found")
-
-        # Validate parameters
-        is_valid, error = tool.validate_params(params)
-        if not is_valid:
-            return ToolResult.from_error(error or "Invalid parameters")
+            available = ", ".join(self.list_tools())
+            return ToolResult.from_error(f"Tool '{name}' not found. Available tools: {available}.")
 
         try:
+            is_valid, error = tool.validate_params(params)
+            if not is_valid:
+                return ToolResult.from_error(
+                    f"Invalid arguments for tool '{name}': {error or 'Invalid parameters'}. "
+                    "Fix the arguments and call the tool again."
+                )
             logger.info("Executing tool: %s", name)
             result = await tool.execute(**params)
         except Exception as e:  # noqa: BLE001

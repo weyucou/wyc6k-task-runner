@@ -62,6 +62,7 @@ class LLMMessage:
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None  # For tool results
+    is_error: bool = False  # For tool results: the tool call failed
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -75,6 +76,8 @@ class LLMMessage:
             result["tool_call_id"] = self.tool_call_id
         if self.name:
             result["name"] = self.name
+        if self.is_error:
+            result["is_error"] = True
         return result
 
     @classmethod
@@ -93,13 +96,16 @@ class LLMMessage:
         return cls(role=MessageRole.ASSISTANT, content=content, tool_calls=tool_calls)
 
     @classmethod
-    def tool_result(cls, tool_call_id: str, content: str, name: str | None = None) -> LLMMessage:
-        """Create a tool result message."""
+    def tool_result(
+        cls, tool_call_id: str, content: str, name: str | None = None, *, is_error: bool = False
+    ) -> LLMMessage:
+        """Create a tool result message; `is_error` marks a failed tool call."""
         return cls(
             role=MessageRole.TOOL,
             content=content,
             tool_call_id=tool_call_id,
             name=name,
+            is_error=is_error,
         )
 
 
