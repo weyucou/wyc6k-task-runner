@@ -152,7 +152,7 @@ contract; it must never move into `marvin/`.
 | `marvin/loop.py` | `run_tool_loop()` — the tool-call loop, shared by every provider client |
 | `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
 | `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
-| `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools |
+| `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools, `ToolPolicy` (`policy.py`), URL checks (`urls.py`) |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
 
 ## TaskEnvelope flow
@@ -162,7 +162,7 @@ SQS → poll_once() → TaskEnvelope.model_validate()
     → ContextBundleService.pull(s3_prefix)  # fetch CLAUDE.md, SOPs, memories
     → AgentRunner(agent=AgentConfig, session_id=str)
     → runner.chat(user_message, ...)
-    → run_tool_loop()  # marvin/loop.py: one client.generate() per turn, tool calls via ToolRegistry
+    → run_tool_loop()  # marvin/loop.py: one client.generate() per turn; ToolPolicy checks each tool call, ToolRegistry runs it
     → result dict → delete SQS message
 ```
 
@@ -175,6 +175,7 @@ SQS → poll_once() → TaskEnvelope.model_validate()
 `marvin/runner.py` — builds the system prompt and tool list, then runs the tool-call loop: `run_tool_loop()` in `marvin/loop.py`, shared by every provider client. Clients implement single-call `generate()` only.
 
 - Up to 10 iterations per task
+- Sends only the agent's allowed tools; `ToolPolicy` rejects calls to any other ([Tool System → Enforcement](#enforcement))
 - Rate limiting between LLM calls
 - Accepts a `context_bundle: ProjectContextBundle` loaded from S3 at worker startup
 
@@ -184,14 +185,33 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 
 ### Tool Profiles
 
-| Profile | Purpose |
-|---------|---------|
-| `MINIMAL` | No tools — LLM response only |
-| `CODING` | File I/O, shell, web fetch/search, sub-agent sessions, image analysis, browser |
-| `MESSAGING` | Messaging-channel tools |
-| `FULL` | All registered tools |
+| Profile | Tools |
+|---------|-------|
+| `MINIMAL` | None: LLM response only |
+| `CODING` | File I/O, shell, web fetch/search, sub-agent sessions, image analysis, memory, GitHub issues and PRs, `askcc_run`. Not `browser`, `calculator` or `get_datetime` |
+| `MESSAGING` | None: it matches name prefixes (`send`, `slack`, …) that no registered tool has |
+| `FULL` | All registered tools (the default) |
 
-Per-agent allow/deny lists can further restrict or extend a profile.
+`tools_allow` adds tools to the profile; `tools_deny` removes them (`AgentConfig.get_allowed_tools`). Exact lists: [README → Tool Profiles](README.md#tool-profiles).
+
+### Enforcement
+
+```
+AgentRunner.run()
+    allowed = agent.get_allowed_tools(registry.list_tools())   # once per run, ∩ tool_names if given
+    → tool list sent to the model: allowed tools only (none → generate() without tools)
+    → run_tool_loop(before_tool_call=ToolPolicy(allowed))
+        each tool call → ToolPolicy: not allowed → "Error: Tool '<name>' is not available …"
+                       → caller's hook (AgentRunner(before_tool_call=...)): a string → "Error: <reason>"
+                       → require_approval → log "auto-approved <name> (unattended run)"
+                       → ToolRegistry.execute()
+```
+
+- `before_tool_call` (`marvin/loop.py`) is the only hook point. A rejected call never reaches the registry; the model receives the reason as the tool result.
+- Runs are unattended, so `require_approval` tools that are allowed run and are logged. `tools_deny` is the gate.
+- `web_fetch`, `browser_fetch` and `image` open URLs through `safe_urlopen` (`marvin/tools/urls.py`): http(s) only, and no loopback, link-local (IMDS, ECS task metadata), unspecified or `fd00:ec2::254` address, checked again on each redirect. `browser` runs `check_url` before navigating.
+
+What is not enforced (root `exec` with the full environment, paths, DNS rebinding, browser redirects): [README → Tool enforcement](README.md#tool-enforcement).
 
 ### Key Coding Tools
 
@@ -217,4 +237,4 @@ Provider is configured per `AgentConfig` instance.
 
 ## Multi-Tenancy
 
-Customer isolation is enforced via `customer_id` on `AgentConfig`. All operations are scoped to the customer context passed in the `TaskEnvelope`.
+Each `TaskEnvelope` carries one customer's `customer_id` and `s3_context_prefix`. `ContextBundleService` (`marvin/context.py`) reads context and writes memory only under the customer root of that prefix. Tools are not scoped per customer: they run with the worker's permissions ([README → Tool enforcement](README.md#tool-enforcement)).
