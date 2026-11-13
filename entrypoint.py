@@ -25,6 +25,7 @@ from marvin.credentials import CredentialResolver
 from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
+from marvin.tools.coding import stop_background_processes
 
 _SENSITIVE_KEYS = frozenset({
     "password",
@@ -79,11 +80,14 @@ async def _run_agent(envelope: TaskEnvelope, context_bundle: CustomerContextBund
         session_id=envelope.session_id,
         context_bundle=context_bundle,
     )
-    response_text, _ = await runner.chat(
-        envelope.user_message,
-        conversation_history=messages,
-        enable_tools=envelope.enable_tools,
-    )
+    try:
+        response_text, _ = await runner.chat(
+            envelope.user_message,
+            conversation_history=messages,
+            enable_tools=envelope.enable_tools,
+        )
+    finally:
+        stop_background_processes()
     return response_text
 
 
