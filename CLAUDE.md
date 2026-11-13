@@ -18,15 +18,15 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → `DockerLauncher` (`docker run`) or `EcsLauncher` (`ecs:RunTask`) per envelope, chosen by `get_launcher()` from `COMPUTE_BACKEND` |
 | `marvin/launchers/consumer.py` | Launcher SQS loop: validate, launch, delete the message only on success; visibility heartbeat |
 | `Dockerfile.launcher` | Launcher image for the `local-runner` compose profile (CI builds only `Dockerfile`) |
-| `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop (`run_tool_loop`) |
+| `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop (`run_tool_loop`). System prompt = context bundle (incl. `MEMORY.md` + newest memory entries, capped at `MEMORY_CONTEXT_MAX_CHARS`) + `agent.system_prompt`, in both `worker.py` and `entrypoint.py` |
 | `marvin/loop.py` | `run_tool_loop()` — the one tool-call loop; calls the provider client's single-call `generate()` each turn |
-| `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
+| `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3 (only the newest `MEMORY_RECENT_ENTRIES` memory files); `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
 | `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter, keyed by agent name (`str`) |
 | `marvin/tools/registry.py` | `ToolRegistry` — maps tool names to `BaseTool` instances; serialises for each provider |
-| `marvin/tools/builtin.py` | Built-in tools (`DateTimeTool`, `MemorySearchTool`); `MemorySearchTool` is a no-op in stateless mode |
-| `marvin/tools/coding.py` | File I/O, shell exec, web fetch/search, browser, sub-agent session tools |
+| `marvin/tools/builtin.py` | Core tools (`get_datetime`, `calculator`, `web_search` via zaatar, `browser_fetch`, `memory_store`/`memory_retrieve` sharing one per-run dict, `memory_search`) and `register_builtin_tools()`; `memory_search` is a no-op in stateless mode |
+| `marvin/tools/coding.py` | File I/O, `apply_patch`, `exec`/`process`, `web_fetch`, GitHub issue/PR tools |
 | `marvin/definitions.py` | S3 path length constants and enum base classes |
 | `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
 | `tests/` | pytest tests (no Django test runner) |
@@ -62,6 +62,8 @@ Key environment variables:
 | `VISIBILITY_TIMEOUT` | `300` | SQS message visibility timeout (seconds) |
 | `SQS_WAIT_TIME_SECONDS` | `20` | Long-poll wait per SQS receive call |
 | `MAX_MESSAGES` | `1` | Messages per SQS receive call |
+| `MEMORY_RECENT_ENTRIES` | `7` | Newest memory files `pull()` reads from S3 |
+| `MEMORY_CONTEXT_MAX_CHARS` | `20000` | Character budget for `MEMORY.md` + recent memory entries in the system prompt |
 | `COMPUTE_BACKEND` | `docker` | Launcher backend: `docker` or `ecs`; anything else fails fast |
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
 | `DOCKER_NETWORK` | — | `docker run --network` (compose: `wade_default`) |
@@ -75,4 +77,5 @@ Full launcher settings: README → Launcher settings.
 - `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
 - Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
+- Do not register a tool whose CLI or package the agent-worker image (`Dockerfile`) lacks. `REGISTERED_TOOLS` in `tests/test_tools.py` pins the registered names; update it with the README tool tables.
 - Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.

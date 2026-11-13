@@ -159,8 +159,8 @@ contract; it must never move into `marvin/`.
 
 ```
 SQS → poll_once() → TaskEnvelope.model_validate()
-    → ContextBundleService.pull(s3_prefix)  # fetch CLAUDE.md, SOPs, memories
-    → AgentRunner(agent=AgentConfig, session_id=str)
+    → ContextBundleService.pull(s3_prefix)  # CLAUDE.md, SOPs, README.md, MEMORY.md, newest memory files
+    → AgentRunner(agent=AgentConfig, session_id=str, context_bundle=CustomerContextBundle)
     → runner.chat(user_message, ...)
     → run_tool_loop()  # marvin/loop.py: one client.generate() per turn, tool calls via ToolRegistry
     → result dict → delete SQS message
@@ -176,7 +176,7 @@ SQS → poll_once() → TaskEnvelope.model_validate()
 
 - Up to 10 iterations per task
 - Rate limiting between LLM calls
-- Accepts a `context_bundle: ProjectContextBundle` loaded from S3 at worker startup
+- System prompt: the task's `context_bundle` (`CustomerContextBundle`, pulled from S3 per task), then `agent.system_prompt`. The bundle part holds CLAUDE.md, the SOPs and the project goals, then `MEMORY.md` and the newest memory entries. `pull()` reads at most `MEMORY_RECENT_ENTRIES` (default 7) memory files, and `MEMORY.md` plus the entries are capped at `MEMORY_CONTEXT_MAX_CHARS` (default 20 000) characters. `worker.py` and `entrypoint.py` both pass the bundle, so both paths send the same prompt.
 
 ## Tool System
 
@@ -187,23 +187,27 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 | Profile | Purpose |
 |---------|---------|
 | `MINIMAL` | No tools — LLM response only |
-| `CODING` | File I/O, shell, web fetch/search, sub-agent sessions, image analysis, browser |
+| `CODING` | File I/O, patching, shell and background processes, web fetch/search, per-run memory, GitHub issues and PRs |
 | `MESSAGING` | Messaging-channel tools |
 | `FULL` | All registered tools |
 
-Per-agent allow/deny lists can further restrict or extend a profile.
+Per-agent allow/deny lists can further restrict or extend a profile. Neither profiles nor allow/deny lists are enforced yet: every registered tool is offered (#91).
 
-### Key Coding Tools
+### Coding Tools
+
+Core tools (date/time, calculator, web search, page fetch, memory) are listed in [README → Available Tools](README.md#available-tools).
 
 | Tool | `require_approval` | Description |
 |------|-------------------|-------------|
 | `ReadTool` | No | Read file contents |
 | `WriteTool` | Yes | Write/overwrite a file |
 | `EditTool` | Yes | Targeted string replacement |
+| `ApplyPatchTool` | Yes | Apply a unified diff via the `patch` CLI |
 | `ExecTool` | Yes | Run shell commands (includes `gh` CLI) |
-| `SessionsSpawnTool` | Yes | Spawn a Claude CLI sub-agent |
-| `SessionsSendTool` | Yes | Send prompt to a sub-agent |
-| `BrowserTool` | Yes | Browser automation via Playwright |
+| `ProcessTool` | Yes | Manage long-running background shell sessions |
+| `WebFetchTool` | No | Fetch URL content as plain text |
+| `GitHubIssueTool` | No | Issue actions via `gh` |
+| `GitHubPRTool` | No | Pull request actions via `gh` |
 
 ## LLM Clients
 
