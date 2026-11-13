@@ -2,7 +2,6 @@
 """Coding tools for file operations, shell execution, web fetching, and GitHub."""
 
 import asyncio
-import logging
 import os
 import re
 import signal
@@ -18,8 +17,6 @@ from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-logger = logging.getLogger(__name__)
 
 
 class ReadTool(BaseTool):
@@ -810,7 +807,4 @@ def register_coding_tools(registry: Any) -> None:
         GitHubPRTool(),
     ]
     for tool in tools:
-        try:
-            registry.register(tool)
-        except ValueError:
-            logger.debug("Tool %s already registered", tool.name)
+        registry.register(tool)

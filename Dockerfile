@@ -29,12 +29,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.14-slim
 
 # CLI tools the agent shells out to via marvin/tools/coding.py:
-#   - gh   — GitHub operations
-#   - git  — repository operations
+#   - gh    — github_issue, github_pr
+#   - git   — repository operations (exec)
+#   - patch — apply_patch
 # (aws, terraform are not bundled here; add if/when the agent's invocation
 #  pattern requires them.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl gnupg git \
+      ca-certificates curl gnupg git patch \
   && install -d -m 0755 /etc/apt/keyrings \
   && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \

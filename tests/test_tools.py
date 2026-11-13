@@ -6,6 +6,7 @@ import http.client
 import inspect
 import io
 import os
+import shutil
 import threading
 import time
 import urllib.error
@@ -23,9 +24,11 @@ from marvin.tools.builtin import (
     DateTimeTool,
     MemorySearchTool,
     WebSearchTool,
+    register_builtin_tools,
 )
 from marvin.tools.coding import (
     _BACKGROUND_PROCESSES,
+    ApplyPatchTool,
     EditTool,
     ExecTool,
     GitHubIssueTool,
@@ -78,6 +81,38 @@ class TestCalculatorToolValidation:
         result = asyncio.run(self.tool.execute(expression="__import__('os')"))
         assert result.error is not None
 
+
+class TestCalculatorTool:
+    @pytest.mark.parametrize(
+        ("expression", "output"),
+        [("2**10", "1024"), ("7 // 2 + 7 % 4", "6"), ("-3 + +4", "1"), ("2 ** -1", "0.5"), ("(1 + 2) * 3 / 4", "2.25")],
+    )
+    def test_evaluates_arithmetic(self, expression, output) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression=expression))
+        assert result.error is None
+        assert result.output == output
+
+    def test_power_tower_is_refused_without_blocking(self) -> None:
+        start = time.monotonic()
+        result = asyncio.run(CalculatorTool().execute(expression="9**9**9**9"))
+        assert time.monotonic() - start < 1
+        assert "exponent" in result.error
+
+    def test_result_too_long_to_print_is_an_error(self) -> None:
+        # Each factor passes the power limits; the product has ~6000 digits, past Python's int-to-str limit.
+        result = asyncio.run(CalculatorTool().execute(expression="999**1000 * 999**1000"))
+        assert result.error.startswith("Calculation error:")
+
+    def test_long_expression_is_rejected(self) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression="1+" * 100 + "1"))
+        assert "200 characters" in result.error
+
+    @pytest.mark.parametrize(
+        "expression", ["abs(-1)", "x + 1", "'a' * 3", "1 < 2", "True + 1", "1j", "1 << 2", "(1, 2)"]
+    )
+    def test_rejects_anything_but_numbers_and_arithmetic(self, expression) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression=expression))
+        assert result.error is not None
 
 
 # ---- DateTimeTool ----
@@ -363,6 +398,62 @@ class TestToolRegistry:
         assert tools[0]["function"]["name"] == "calculator"
 
 
+# ---- register_builtin_tools ----
+
+# Every tool the agent is offered. README → Available Tools documents the same set: update both together.
+REGISTERED_TOOLS = {
+    # marvin/tools/builtin.py
+    "get_datetime",
+    "calculator",
+    "web_search",
+    "browser_fetch",
+    "memory_store",
+    "memory_retrieve",
+    "memory_search",
+    # marvin/tools/coding.py
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "exec",
+    "process",
+    "web_fetch",
+    "github_issue",
+    "github_pr",
+}
+
+
+class TestRegisterBuiltinTools:
+    def test_registers_exactly_the_documented_tools(self) -> None:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        assert set(registry.list_tools()) == REGISTERED_TOOLS
+        assert isinstance(registry.get("web_search"), WebSearchTool)  # zaatar-search-api
+
+    def test_a_duplicate_tool_name_fails_registration(self) -> None:
+        registry = ToolRegistry()
+        registry.register(WebSearchTool())
+        with pytest.raises(ValueError, match="'web_search' is already registered"):
+            register_builtin_tools(registry)
+
+    def test_memory_retrieve_reads_what_memory_store_wrote(self) -> None:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        stored = asyncio.run(registry.execute("memory_store", {"key": "plan", "value": "ship it"}))
+        retrieved = asyncio.run(registry.execute("memory_retrieve", {"key": "plan"}))
+        assert stored.error is None
+        assert retrieved.error is None
+        assert retrieved.output == "ship it"
+
+    def test_memory_is_scoped_to_one_registry(self) -> None:
+        first, second = ToolRegistry(), ToolRegistry()
+        register_builtin_tools(first)
+        register_builtin_tools(second)
+        asyncio.run(first.execute("memory_store", {"key": "plan", "value": "ship it"}))
+        result = asyncio.run(second.execute("memory_retrieve", {"key": "plan"}))
+        assert result.error == "Key 'plan' not found in memory."
+
+
 # ---- GitHubIssueTool ----
 
 
@@ -570,6 +661,17 @@ class TestFileTools:
         result = asyncio.run(EditTool().execute(path=str(target), old_string=old_string, new_string="x"))
         assert error in result.error
         assert target.read_text(encoding="utf-8") == "a = 1\nb = 2\n"
+
+    @pytest.mark.skipif(
+        shutil.which("patch") is None, reason="needs the patch CLI (the agent-worker image installs it)"
+    )
+    def test_apply_patch_applies_a_unified_diff(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)  # patch runs in the working directory
+        (tmp_path / "notes.txt").write_text("one\ntwo\n", encoding="utf-8")
+        diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n"
+        result = asyncio.run(ApplyPatchTool().execute(patch=diff))
+        assert result.error is None
+        assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "one\nthree\n"
 
 
 # ---- ExecTool / ProcessTool ----
