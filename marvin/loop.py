@@ -2,12 +2,17 @@
 """The tool-call loop shared by every LLM provider client."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse
+from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse, ToolCall
 from marvin.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# Runs before each tool call. A returned string rejects the call: the tool does not run,
+# and the model receives `Error: <reason>` as the tool result.
+type BeforeToolCall = Callable[[ToolCall], Awaitable[str | None]]
 
 
 async def run_tool_loop(
@@ -20,11 +25,13 @@ async def run_tool_loop(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     max_iterations: int = 10,
+    before_tool_call: BeforeToolCall | None = None,
 ) -> tuple[LLMResponse, list[LLMMessage]]:
     """Generate a response with automatic tool execution.
 
     1. Send the conversation to the LLM.
-    2. If the LLM requests tool calls, execute them in order through `registry`.
+    2. If the LLM requests tool calls, pass each to `before_tool_call`, then execute the
+       calls it does not reject, in order, through `registry`.
     3. Append the tool results and repeat until a response has no tool calls.
 
     After `max_iterations` rounds of tool calls, one final call is made without tools.
@@ -38,6 +45,8 @@ async def run_tool_loop(
         temperature: Sampling temperature.
         max_tokens: Maximum tokens to generate.
         max_iterations: Maximum tool calling iterations.
+        before_tool_call: Optional hook run before each tool call. A returned string rejects the
+            call. If the hook raises, the call is not executed either.
 
     Returns:
         Tuple of (final response, message history). The final response is not appended to the history.
@@ -67,11 +76,15 @@ async def run_tool_loop(
 
         # Execute each tool and collect results
         for tool_call in response.tool_calls:
-            logger.info("Executing tool: %s", tool_call.name)
-
             try:
-                result = await registry.execute(tool_call.name, tool_call.arguments)
-                tool_output = result.output
+                reason = await before_tool_call(tool_call) if before_tool_call else None
+                if reason is None:
+                    logger.info("Executing tool: %s", tool_call.name)
+                    result = await registry.execute(tool_call.name, tool_call.arguments)
+                    tool_output = result.output
+                else:
+                    logger.warning("Rejected tool call %s: %s", tool_call.name, reason)
+                    tool_output = f"Error: {reason}"
             except Exception as e:
                 logger.exception("Tool execution failed: %s", tool_call.name)
                 tool_output = f"Error executing tool: {e}"
