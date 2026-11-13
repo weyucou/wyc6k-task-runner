@@ -31,6 +31,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
 | `tests/` | pytest tests (no Django test runner) |
 | `tests/fake_llm.py` | `FakeLLMClient` — scripted LLM for loop tests (`fake_text`, `fake_tool_calls`, `fake_error`, `fake_max_tokens`); records each request |
+| `tests/integration/` | End-to-end pipeline tests (SQS → agent → GitHub → S3 memory) on moto; `control_plane.py` holds the routing stand-in that belongs to `wyc6k-task-manager` |
 | `pyproject.toml` | Project config; pure Python, no Django deps |
 
 ## Architecture
@@ -41,6 +42,7 @@ See [weyucou/wyc6k-spec — Architecture](https://github.com/weyucou/wyc6k-spec/
 
 ```bash
 uv run pytest              # run tests
+uv run pytest tests/integration  # end-to-end pipeline tests (moto; no Docker daemon)
 uv run ruff check          # lint
 uv run ruff format         # format
 python -m marvin           # start the SQS worker
@@ -58,6 +60,7 @@ Key environment variables:
 | `AWS_DEFAULT_REGION` | `ap-northeast-1` | AWS region |
 | `POLL_INTERVAL_SECONDS` | `5` | Sleep between polls |
 | `VISIBILITY_TIMEOUT` | `300` | SQS message visibility timeout (seconds) |
+| `SQS_WAIT_TIME_SECONDS` | `20` | Long-poll wait per SQS receive call |
 | `MAX_MESSAGES` | `1` | Messages per SQS receive call |
 | `COMPUTE_BACKEND` | `docker` | Launcher backend: `docker` or `ecs`; anything else fails fast |
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
