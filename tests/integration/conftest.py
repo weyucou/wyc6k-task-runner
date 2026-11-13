@@ -55,6 +55,10 @@ GITHUB_TOKEN_VALUE = "sandbox-github-token-not-a-real-credential"
 CUSTOMER_CLAUDE_MD = "# CLAUDE.md\n\nAlways comment on the issue before finishing.\n"
 CUSTOMER_SOP = "# Issue Lifecycle\n\nMove the issue to in-review once a PR exists.\n"
 PROJECT_GOALS = "# wyc6k-sandbox\n\nSandbox project used by the pipeline integration tests.\n"
+MEMORY_INDEX = "# Memory index\n\n- Issue 41 is a duplicate of issue 40.\n"
+# An earlier run's daily memory file, in the layout push_memory writes.
+PREVIOUS_MEMORY_KEY = "memory/2026/2026-01-05.md"
+PREVIOUS_MEMORY = "## task-prepare-000\n\nClosed issue 41 as a duplicate of issue 40.\n"
 
 # `gh` stand-in: records every invocation — arguments plus the token it was
 # handed — as one JSON object per line, and answers the read-back commands the
@@ -150,7 +154,8 @@ def s3_context() -> str:
         f"{CUSTOMER_PREFIX}/CLAUDE.md": CUSTOMER_CLAUDE_MD,
         f"{CUSTOMER_PREFIX}/sops/issue-lifecycle.md": CUSTOMER_SOP,
         f"{project_key}/README.md": PROJECT_GOALS,
-        f"{project_key}/MEMORY.md": "# Memory index\n",
+        f"{project_key}/MEMORY.md": MEMORY_INDEX,
+        f"{project_key}/{PREVIOUS_MEMORY_KEY}": PREVIOUS_MEMORY,
     }
     for key, body in objects.items():
         s3.put_object(Bucket=CONTEXT_BUCKET, Key=key, Body=body.encode("utf-8"))
