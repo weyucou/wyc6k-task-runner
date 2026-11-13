@@ -65,7 +65,7 @@ def configure_logging() -> None:
     )
 
 
-async def _run_agent(envelope: TaskEnvelope, context_bundle: CustomerContextBundle) -> str:
+async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle: CustomerContextBundle) -> str:
     messages: list[LLMMessage] = []
     for msg in envelope.conversation_history:
         role = msg.get("role", "user")
@@ -78,13 +78,13 @@ async def _run_agent(envelope: TaskEnvelope, context_bundle: CustomerContextBund
             messages.append(LLMMessage.user(content))
 
     runner = AgentRunner(
-        agent=envelope.agent,
+        agent=envelope.agent_config(api_key),
         session_id=envelope.session_id,
         context_bundle=context_bundle,
     )
     try:
         response_text, _ = await runner.chat(
-            envelope.user_message,
+            envelope.task_prompt(),
             conversation_history=messages,
             enable_tools=envelope.enable_tools,
         )
@@ -120,23 +120,27 @@ def main() -> int:
         task_id=envelope.task_id,
         customer_id=envelope.customer_id,
         session_id=envelope.session_id,
+        task_source_id=envelope.task_source_id,
+        repository=envelope.repository,
+        issue_url=envelope.issue_url,
+        action=envelope.action,
     )
     log.info("Task envelope parsed", step="parse", status="ok")
 
     # Step 2: Resolve credentials
     log.info("Resolving credentials", step="resolve-credentials", status="start")
     try:
-        CredentialResolver().resolve(envelope)
+        api_key = CredentialResolver().resolve(envelope)
     except RuntimeError as exc:
         log.error("Failed to resolve credentials", step="resolve-credentials", status="failed", error=str(exc))
         return 2
     log.info("Credentials resolved", step="resolve-credentials", status="ok")
 
     # Step 3: Pull S3 context
-    log.info("Pulling S3 context", step="pull-context", status="start", s3_prefix=envelope.s3_context_prefix)
+    log.info("Pulling S3 context", step="pull-context", status="start", s3_prefix=envelope.context_s3_prefix)
     try:
         context_service = ContextBundleService()
-        context_bundle = context_service.pull(envelope.s3_context_prefix)
+        context_bundle = context_service.pull(envelope.context_s3_prefix)
     except Exception as exc:
         log.error("Failed to pull S3 context", step="pull-context", status="failed", error=str(exc))
         return 2
@@ -145,7 +149,7 @@ def main() -> int:
     # Step 4: Run agent
     log.info("Running agent", step="run-agent", status="start")
     try:
-        response_text = asyncio.run(_run_agent(envelope, context_bundle))
+        response_text = asyncio.run(_run_agent(envelope, api_key, context_bundle))
     except Exception as exc:
         log.error("Agent run failed", step="run-agent", status="failed", error=str(exc))
         return 1
@@ -160,7 +164,7 @@ def main() -> int:
             filename=f"{today.isoformat()}.md",
             content=f"## {envelope.task_id}\n\n{response_text}\n",
         )
-        context_service.push_memory(envelope.s3_context_prefix, memory_entry)
+        context_service.push_memory(envelope.context_s3_prefix, memory_entry)
         log.info("Memory entry written", step="write-memory", status="ok")
     except Exception as exc:
         log.warning("Failed to write memory entry", step="write-memory", status="failed", error=str(exc))

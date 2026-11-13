@@ -26,6 +26,7 @@ from tests.integration.conftest import (
     MAX_RECEIVE_COUNT,
     SANDBOX_ISSUE_URL,
     SANDBOX_PR_URL,
+    SANDBOX_REPOSITORY,
     Pipeline,
     make_envelope,
 )
@@ -79,8 +80,16 @@ def _system_prompt(request_payload: dict[str, Any]) -> str:
     return ""
 
 
+def _user_prompt(request_payload: dict[str, Any]) -> str:
+    """Extract the first user message — the task — the runtime sent to the model."""
+    for message in request_payload["messages"]:
+        if message["role"] == "user":
+            return message["content"]
+    return ""
+
+
 class TestShortTaskInlinePath:
-    """action=prepare, duration_hint=300s — the Lambda handles the task inline."""
+    """action=review, duration_hint=300s — the Lambda handles the task inline."""
 
     def test_inline_path_comments_on_issue_and_writes_memory(self, monkeypatch, pipeline: Pipeline) -> None:
         pipeline.llm.script(
@@ -98,13 +107,12 @@ class TestShortTaskInlinePath:
             ]
         )
         envelope = make_envelope(
-            pipeline.llm,
-            task_id="task-prepare-001",
-            user_message="Prepare issue 42 for development.",
+            task_id="task-review-001",
+            action="review",
             duration_hint_seconds=SHORT_TASK_DURATION_SECONDS,
             github_token_secret_id=pipeline.github_token_secret_id,
         )
-        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=envelope.model_dump_json())
+        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=json.dumps(envelope))
 
         message = _receive_one(pipeline.sqs, pipeline.queues.url)
         assert message is not None
@@ -122,7 +130,7 @@ class TestShortTaskInlinePath:
         assert comments[0].github_token == GITHUB_TOKEN_VALUE
 
         memory = _read_daily_memory(pipeline.s3_context_prefix)
-        assert "task-prepare-001" in memory
+        assert "task-review-001" in memory
         assert "acceptance criteria rewritten" in memory
 
         assert _receive_one(pipeline.sqs, pipeline.queues.url) is None
@@ -130,13 +138,12 @@ class TestShortTaskInlinePath:
     def test_inline_path_spawns_no_ecs_task(self, monkeypatch, pipeline: Pipeline) -> None:
         pipeline.llm.script([text_turn("Nothing to change.")])
         envelope = make_envelope(
-            pipeline.llm,
-            task_id="task-prepare-002",
-            user_message="Prepare issue 42 for development.",
+            task_id="task-review-002",
+            action="review",
             duration_hint_seconds=SHORT_TASK_DURATION_SECONDS,
             github_token_secret_id=pipeline.github_token_secret_id,
         )
-        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=envelope.model_dump_json())
+        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=json.dumps(envelope))
         message = _receive_one(pipeline.sqs, pipeline.queues.url)
         assert message is not None
 
@@ -147,13 +154,12 @@ class TestShortTaskInlinePath:
     def test_inline_path_feeds_s3_context_to_the_model(self, monkeypatch, pipeline: Pipeline) -> None:
         pipeline.llm.script([text_turn("Understood.")])
         envelope = make_envelope(
-            pipeline.llm,
-            task_id="task-prepare-003",
-            user_message="Summarise the project goals.",
+            task_id="task-review-003",
+            action="review",
             duration_hint_seconds=SHORT_TASK_DURATION_SECONDS,
             github_token_secret_id=pipeline.github_token_secret_id,
         )
-        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=envelope.model_dump_json())
+        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=json.dumps(envelope))
         message = _receive_one(pipeline.sqs, pipeline.queues.url)
         assert message is not None
 
@@ -164,13 +170,34 @@ class TestShortTaskInlinePath:
         assert "Move the issue to in-review once a PR exists." in system_prompt
         assert "Sandbox project used by the pipeline integration tests." in system_prompt
 
+    def test_inline_path_sends_the_task_built_from_the_envelope(self, monkeypatch, pipeline: Pipeline) -> None:
+        pipeline.llm.script([text_turn("Reviewed.")])
+        envelope = make_envelope(
+            task_id="task-review-004",
+            action="review",
+            user_message="Focus the review on error handling.",
+            duration_hint_seconds=SHORT_TASK_DURATION_SECONDS,
+            github_token_secret_id=pipeline.github_token_secret_id,
+        )
+        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=json.dumps(envelope))
+        message = _receive_one(pipeline.sqs, pipeline.queues.url)
+        assert message is not None
+
+        assert _run_inline(monkeypatch, message["Body"]) == 0
+
+        task = _user_prompt(pipeline.llm.requests[0])
+        assert SANDBOX_REPOSITORY in task
+        assert SANDBOX_ISSUE_URL in task
+        assert "review" in task
+        assert task.endswith("Focus the review on error handling.")
+
 
 class TestMediumTaskFargatePath:
     """action=develop, duration_hint=3600s — the Lambda hands off to Fargate."""
 
-    def _dispatch(self, pipeline: Pipeline, envelope: TaskEnvelope) -> dict[str, Any]:
+    def _dispatch(self, pipeline: Pipeline, envelope: dict[str, Any]) -> dict[str, Any]:
         """Enqueue, route and launch the envelope; return the recorded ECS task."""
-        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=envelope.model_dump_json())
+        pipeline.sqs.send_message(QueueUrl=pipeline.queues.url, MessageBody=json.dumps(envelope))
         message = _receive_one(pipeline.sqs, pipeline.queues.url)
         assert message is not None
         delivered = TaskEnvelope.model_validate_json(message["Body"])
@@ -189,11 +216,10 @@ class TestMediumTaskFargatePath:
         described = pipeline.ecs.describe_tasks(cluster=pipeline.fargate.cluster_name, tasks=[task_arn])
         return described["tasks"][0]
 
-    def _envelope(self, pipeline: Pipeline, task_id: str) -> TaskEnvelope:
+    def _envelope(self, pipeline: Pipeline, task_id: str) -> dict[str, Any]:
         return make_envelope(
-            pipeline.llm,
             task_id=task_id,
-            user_message="Implement issue 42 and open a pull request.",
+            action="develop",
             duration_hint_seconds=MEDIUM_TASK_DURATION_SECONDS,
             github_token_secret_id=pipeline.github_token_secret_id,
         )
@@ -208,7 +234,7 @@ class TestMediumTaskFargatePath:
         assert task["launchType"] == "FARGATE"
         overrides = container_environment(task, AGENT_WORKER_CONTAINER_NAME)
         assert overrides["CUSTOMER_ID"] == CUSTOMER_ID
-        assert TaskEnvelope.model_validate_json(overrides["TASK_ENVELOPE_JSON"]) == envelope
+        assert json.loads(overrides["TASK_ENVELOPE_JSON"]) == envelope  # the wire body, unchanged
 
     def test_launched_container_updates_issue_with_pr_link_and_memory(self, monkeypatch, pipeline: Pipeline) -> None:
         pipeline.llm.script(

@@ -46,10 +46,10 @@ def _get_sqs_client() -> Any:
     return boto3.client("sqs", **kwargs)
 
 
-async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
-    """Process a single TaskEnvelope through the agent runner."""
+async def process_envelope(envelope: TaskEnvelope, api_key: str | None) -> dict[str, Any]:
+    """Process a single TaskEnvelope through the agent runner, with the resolved LLM API key."""
     context_service = ContextBundleService()
-    context = context_service.pull(envelope.s3_context_prefix)
+    context = context_service.pull(envelope.context_s3_prefix)
     logger.info("Pulled context for customer=%s", context.customer_id)
 
     messages: list[LLMMessage] = []
@@ -63,18 +63,15 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
         else:
             messages.append(LLMMessage.user(content))
 
-    # Use agent's system prompt; fall back to S3 CLAUDE.md when unset
-    system_prompt = envelope.agent.system_prompt or context.claude_md or None
-
     runner = AgentRunner(
-        agent=envelope.agent,
+        agent=envelope.agent_config(api_key),
         session_id=envelope.session_id,
     )
     try:
         response_text, history = await runner.chat(
-            envelope.user_message,
+            envelope.task_prompt(),
             conversation_history=messages,
-            system_prompt=system_prompt,
+            system_prompt=context.claude_md or None,  # the customer's CLAUDE.md from S3
             enable_tools=envelope.enable_tools,
         )
     finally:
@@ -122,11 +119,18 @@ def poll_once(sqs: Any) -> None:
         if envelope is None:
             continue
         try:
-            resolver = CredentialResolver()
-            resolver.resolve(envelope)
-            logger.info("Processing task_id=%s for customer=%s", envelope.task_id, envelope.customer_id)
+            api_key = CredentialResolver().resolve(envelope)
+            logger.info(
+                "Processing task_id=%s for customer=%s: action=%s issue_url=%s repository=%s task_source_id=%s",
+                envelope.task_id,
+                envelope.customer_id,
+                envelope.action,
+                envelope.issue_url,
+                envelope.repository,
+                envelope.task_source_id,
+            )
 
-            result = asyncio.run(process_envelope(envelope))
+            result = asyncio.run(process_envelope(envelope, api_key))
             logger.info("Completed task_id=%s: %d chars", result["task_id"], len(result["response"]))
             sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
         except Exception:

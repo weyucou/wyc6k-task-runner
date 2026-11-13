@@ -53,21 +53,18 @@ class CredentialResolver:
     Never logs resolved secret values.
     """
 
-    def resolve(self, envelope: TaskEnvelope) -> None:
-        """Resolve credentials and apply them to the task envelope in-place.
+    def resolve(self, envelope: TaskEnvelope) -> str | None:
+        """Resolve the task's credentials and return the Anthropic API key for the LLM client.
 
         - github_token_secret_id -> sets os.environ["GITHUB_TOKEN"] for tool use
-        - anthropic_api_key_secret_id -> sets envelope.agent.api_key for the LLM client
+        - anthropic_api_key_secret_id -> the returned key, for TaskEnvelope.agent_config()
 
-        Falls back to GITHUB_TOKEN / ANTHROPIC_API_KEY env vars when secret IDs are absent.
+        Falls back to GITHUB_TOKEN / ANTHROPIC_API_KEY env vars when secret IDs are absent, and returns
+        None when neither source has an Anthropic key.
         Raises RuntimeError before processing if a Secrets Manager fetch fails.
         """
         github_token = _resolve_credential(envelope.github_token_secret_id, "GITHUB_TOKEN", "GitHub token")
         if github_token:
             os.environ["GITHUB_TOKEN"] = github_token
 
-        anthropic_key = _resolve_credential(
-            envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key"
-        )
-        if anthropic_key:
-            envelope.agent.api_key = anthropic_key
+        return _resolve_credential(envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key")
