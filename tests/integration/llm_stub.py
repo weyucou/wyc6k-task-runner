@@ -100,7 +100,7 @@ class ScriptedLLMServer:
 
     @property
     def base_url(self) -> str:
-        """Base URL to hand to `AgentConfig.base_url`."""
+        """Base URL for the OpenAI client; the `llm` fixture exports it as `OPENAI_BASE_URL`."""
         return f"http://127.0.0.1:{self._server.server_address[1]}/v1"
 
     @property

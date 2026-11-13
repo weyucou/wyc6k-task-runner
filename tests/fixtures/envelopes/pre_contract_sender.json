@@ -1,0 +1,8 @@
+{
+  "customer_id": 7,
+  "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+  "action": "develop",
+  "agent_profile": "CODING",
+  "context_s3_prefix": "",
+  "duration_hint_seconds": 3600
+}

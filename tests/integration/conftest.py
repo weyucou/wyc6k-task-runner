@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 from marvin.awsclients import get_secrets_manager_client
 from marvin.functions import get_s3_client
-from marvin.models import AgentConfig, LLMProvider, TaskEnvelope
 from tests.integration.control_plane import AGENT_WORKER_CONTAINER_NAME
 from tests.integration.llm_stub import ScriptedLLMServer
 
@@ -33,7 +32,9 @@ AWS_REGION = "us-west-2"
 STAGE = "dev"
 
 CUSTOMER_ID = "sandbox-customer"
+TASK_SOURCE_ID = 1
 PROJECT_REPO = "wyc6k-sandbox"
+SANDBOX_REPOSITORY = f"weyucou/{PROJECT_REPO}"
 CONTEXT_BUCKET = "wyc6k-agent-context-dev"
 CUSTOMER_PREFIX = f"customers/{CUSTOMER_ID}"
 S3_CONTEXT_PREFIX = f"s3://{CONTEXT_BUCKET}/{CUSTOMER_PREFIX}/projects/{PROJECT_REPO}"
@@ -297,10 +298,15 @@ def gh_cli(tmp_path, monkeypatch) -> Iterator[GhRecorder]:
 
 
 @pytest.fixture
-def llm() -> Iterator[ScriptedLLMServer]:
-    """Serve scripted model replies over an OpenAI-compatible endpoint."""
+def llm(monkeypatch) -> Iterator[ScriptedLLMServer]:
+    """Serve scripted model replies over an OpenAI-compatible endpoint.
+
+    The envelope carries no base_url (runner-internal in the v1 contract), so the
+    `vllm` client reaches the stub through the runner environment, as in production.
+    """
     server = ScriptedLLMServer()
     server.start()
+    monkeypatch.setenv("OPENAI_BASE_URL", server.base_url)
     yield server
     server.stop()
 
@@ -363,29 +369,25 @@ def pipeline(
 
 
 def make_envelope(
-    llm_server: ScriptedLLMServer,
     *,
     task_id: str,
-    user_message: str,
+    action: str,
     duration_hint_seconds: int,
+    user_message: str = "",
     github_token_secret_id: str | None = None,
-) -> TaskEnvelope:
-    """Build the envelope wyc6k-task-manager would enqueue for this customer."""
-    agent = AgentConfig(
-        name="sandbox-agent",
-        provider=LLMProvider.VLLM,
-        model_name="stub-model",
-        base_url=llm_server.base_url,
-        api_key="stub-key",
-        system_prompt="You are the wyc6k sandbox agent.",
-    )
-    return TaskEnvelope(
-        task_id=task_id,
-        customer_id=CUSTOMER_ID,
-        session_id=f"session-{task_id}",
-        agent=agent,
-        s3_context_prefix=S3_CONTEXT_PREFIX,
-        user_message=user_message,
-        duration_hint_seconds=duration_hint_seconds,
-        github_token_secret_id=github_token_secret_id,
-    )
+) -> dict[str, Any]:
+    """Build the v1 wire envelope wyc6k-task-manager would enqueue for this customer."""
+    return {
+        "schema_version": 1,
+        "task_id": task_id,
+        "customer_id": CUSTOMER_ID,
+        "task_source_id": TASK_SOURCE_ID,
+        "repository": SANDBOX_REPOSITORY,
+        "issue_url": SANDBOX_ISSUE_URL,
+        "action": action,
+        "agent": {"provider": "vllm", "model_name": "stub-model", "tool_profile": "full"},
+        "context_s3_prefix": S3_CONTEXT_PREFIX,
+        "duration_hint_seconds": duration_hint_seconds,
+        "github_token_secret_id": github_token_secret_id,
+        "user_message": user_message,
+    }

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "task_id": "a71e36c2-0807-4791-9fc4-352185f500b0",
+  "customer_id": "7",
+  "task_source_id": 12,
+  "repository": "acme-corp/billing-api",
+  "issue_url": "https://github.com/acme-corp/billing-api/issues/57",
+  "action": "review",
+  "agent": {
+    "provider": "anthropic",
+    "model_name": "claude-opus-5-5",
+    "tool_profile": "full"
+  },
+  "context_s3_prefix": "s3://weyucou-agent-contexts/acme-corp/projects/billing-api/",
+  "duration_hint_seconds": 3600,
+  "github_token_secret_id": "weyucou/agent/acme-corp/github",
+  "anthropic_api_key_secret_id": "weyucou/agent/acme-corp/anthropic",
+  "user_message": "Focus the review on error handling and test coverage."
+}
