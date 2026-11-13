@@ -17,6 +17,7 @@ from typing import IO, TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
 
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
+from marvin.tools.urls import check_url, safe_urlopen
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -563,7 +564,7 @@ class WebFetchTool(BaseTool):
 
     def _fetch(self, url: str, timeout: int) -> str:
         req = Request(url, headers={"User-Agent": "marvin-manager/1.0"})  # noqa: S310
-        with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        with safe_urlopen(req, timeout=timeout) as response:
             raw = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
             text = raw.decode(charset, errors="replace")
@@ -849,7 +850,7 @@ class ImageTool(BaseTool):
 
     def _fetch_url(self, url: str) -> bytes:
         req = Request(url, headers={"User-Agent": "marvin-manager/1.0"})  # noqa: S310
-        with urlopen(req, timeout=30) as resp:  # noqa: S310
+        with safe_urlopen(req, timeout=30) as resp:
             return resp.read()
 
     def _call_vision(self, api_key: str, image_data: str, media_type: str, prompt: str) -> str:
@@ -953,6 +954,9 @@ class BrowserAutomationTool(BaseTool):
             )
 
         try:
+            if url:
+                # Covers every page.goto below. Redirects and subresources inside Chromium are not checked.
+                await asyncio.to_thread(check_url, url)
             async with async_playwright() as pw:
                 browser = await pw.chromium.launch(headless=True)
                 page = await browser.new_page()

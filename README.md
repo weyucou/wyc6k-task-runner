@@ -211,11 +211,32 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 
 ### Tool Profiles
 
+An agent's allowed tools are its `tool_profile`'s tools, plus `tools_allow`, minus `tools_deny` (`AgentConfig.get_allowed_tools`, `marvin/models.py`). Names that are not registered are ignored.
+
 | Profile | Tools |
 |---------|-------|
 | `minimal` | None |
-| `coding` | `read`, `write`, `edit`, `apply_patch`, `exec`, `process`, `web_fetch`, `web_search`, `sessions_spawn`, `sessions_send`, `image`, `memory_search` |
-| `full` | All tools |
+| `coding` | `apply_patch`, `askcc_run`, `browser_fetch`, `edit`, `exec`, `github_issue`, `github_pr`, `image`, `memory_retrieve`, `memory_search`, `memory_store`, `process`, `read`, `sessions_send`, `sessions_spawn`, `web_fetch`, `web_search`, `write` |
+| `messaging` | None. It matches names starting with `send`, `message`, `notify`, `email`, `slack` or `telegram`; no registered tool has one |
+| `full` (default) | All registered tools |
+
+### Tool enforcement
+
+`AgentRunner` (`marvin/runner.py`) computes the allowed tools once per run.
+
+- **Tool list**: only allowed tools are sent to the model. With none (`minimal`), the model is called without tools.
+- **Tool calls**: `ToolPolicy` (`marvin/tools/policy.py`), the `before_tool_call` hook of `run_tool_loop()`, rejects a call to any other tool. The tool does not run; the model receives `Error: Tool '<name>' is not available to this agent (profile: <profile>). Available tools: <names>.`
+- **Caller hook**: `AgentRunner(before_tool_call=...)` runs next, for allowed calls only. A returned string rejects the call; the model receives `Error: <reason>`.
+- **`require_approval`**: every run is unattended, so nobody can approve a call. An allowed tool marked `require_approval` runs, and each call is logged: `auto-approved <name> (unattended run)`. To keep an agent from using such a tool, list it in `tools_deny`.
+- **URLs**: `web_fetch`, `browser_fetch` and `image` (http(s) sources) open URLs through `safe_urlopen` (`marvin/tools/urls.py`). It accepts `http` and `https` only, and refuses a host that resolves to a loopback, link-local (`169.254.0.0/16`, which holds EC2 IMDS and ECS task metadata; `fe80::/10`) or unspecified address, or to `fd00:ec2::254` (IMDS over IPv6). It checks each redirect target the same way. `browser` checks its `url` before navigating. Private (RFC 1918) addresses are allowed.
+
+Not enforced:
+
+- `exec` and `process` run any command as root (the agent-worker image sets no `USER`), with the worker's full environment, including `GITHUB_TOKEN` and AWS credentials. They reach any address, metadata endpoints included. The CLIs that `sessions_spawn` and `askcc_run` start run the same way.
+- No path restriction: file tools read and write, and `image` reads, any path the process can.
+- DNS rebinding: the URL check resolves the host, then the HTTP client resolves it again to connect.
+- `browser`: Chromium follows redirects and loads subresources without the check.
+- Tool output is not redacted.
 
 ### Required Environment Variables
 

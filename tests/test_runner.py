@@ -2,18 +2,50 @@
 """Tests for AgentRunner with mock LLM client."""
 
 import asyncio
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from marvin.context import CustomerContextBundle
-from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason
-from marvin.models import AgentConfig, LLMProvider
+from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason, ToolCall
+from marvin.models import AgentConfig, LLMProvider, ToolProfile
 from marvin.runner import AgentRunner, _build_context_prefix
 from marvin.tools import ToolRegistry
+from marvin.tools.base import BaseTool
 from marvin.tools.builtin import CalculatorTool
-from tests.fake_llm import FakeLLMClient, fake_text, fake_tool_call, fake_tool_calls
+from tests.fake_llm import (
+    FakeLLMClient,
+    FakeRequest,
+    RecordingTool,
+    fake_text,
+    fake_tool_call,
+    fake_tool_calls,
+)
+
+# The `coding` profile's tools that are registered: every built-in tool except `browser`, `calculator`
+# and `get_datetime`.
+CODING_TOOLS = {
+    "apply_patch",
+    "askcc_run",
+    "browser_fetch",
+    "edit",
+    "exec",
+    "github_issue",
+    "github_pr",
+    "image",
+    "memory_retrieve",
+    "memory_search",
+    "memory_store",
+    "process",
+    "read",
+    "sessions_send",
+    "sessions_spawn",
+    "web_fetch",
+    "web_search",
+    "write",
+}
 
 
 def _make_agent(**kwargs: Any) -> AgentConfig:
@@ -170,6 +202,121 @@ class TestAgentRunnerToolLoop:
             ("You are helpful.", tools, 0.2, 512),
             ("You are helpful.", None, 0.2, 512),
         ]
+
+
+def _run_turns(
+    runner: AgentRunner, *responses: LLMResponse, **run_kwargs: Any
+) -> tuple[FakeLLMClient, list[LLMMessage]]:
+    """Run one user message through `runner` against scripted `responses`; return the client and the history."""
+    client = FakeLLMClient(list(responses))
+    runner._client = client
+    _, history = asyncio.run(runner.run([LLMMessage.user("Go.")], **run_kwargs))
+    return client, history
+
+
+def _sent_tool_names(request: FakeRequest) -> set[str]:
+    return {tool["name"] for tool in request.tools or []}
+
+
+def _runner_with(*tools: BaseTool, agent: AgentConfig, **kwargs: Any) -> AgentRunner:
+    """A runner whose registry holds only `tools`."""
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    return AgentRunner(agent=agent, registry=registry, register_builtins=False, **kwargs)
+
+
+class TestAgentRunnerToolFiltering:
+    def test_minimal_profile_sends_no_tools(self) -> None:
+        runner = AgentRunner(agent=_make_agent(tool_profile=ToolProfile.MINIMAL))
+
+        client, _ = _run_turns(runner, fake_text("Hi."))
+
+        assert [request.tools for request in client.requests] == [None]
+
+    @pytest.mark.parametrize(
+        ("agent_kwargs", "expected"),
+        [
+            pytest.param({"tool_profile": ToolProfile.CODING}, CODING_TOOLS, id="coding"),
+            pytest.param(
+                {"tool_profile": ToolProfile.MINIMAL, "tools_allow": ["get_datetime"]},
+                {"get_datetime"},
+                id="minimal-plus-allow",
+            ),
+        ],
+    )
+    def test_sent_tools_follow_the_profile(self, agent_kwargs: dict[str, Any], expected: set[str]) -> None:
+        runner = AgentRunner(agent=_make_agent(**agent_kwargs))
+
+        client, _ = _run_turns(runner, fake_text("Hi."))
+
+        assert _sent_tool_names(client.requests[0]) == expected
+
+    def test_denied_tool_is_not_sent(self) -> None:
+        runner = AgentRunner(agent=_make_agent(tool_profile=ToolProfile.FULL, tools_deny=["exec"]))
+
+        client, _ = _run_turns(runner, fake_text("Hi."))
+
+        assert _sent_tool_names(client.requests[0]) == set(runner.registry.list_tools()) - {"exec"}
+
+    def test_tool_names_narrow_the_allowed_tools(self) -> None:
+        calculator, exec_tool = RecordingTool("calculator"), RecordingTool("exec")
+        runner = _runner_with(calculator, exec_tool, agent=_make_agent())
+
+        client, history = _run_turns(
+            runner,
+            fake_tool_calls(fake_tool_call("exec", {})),
+            fake_text("OK."),
+            tool_names=["calculator"],
+        )
+
+        assert _sent_tool_names(client.requests[0]) == {"calculator"}
+        assert exec_tool.calls == []
+        assert history[-1].content.startswith("Error: Tool 'exec' is not available")
+
+
+class TestAgentRunnerToolPolicy:
+    def test_call_to_a_denied_tool_is_rejected(self) -> None:
+        exec_tool, read_tool = RecordingTool("exec"), RecordingTool("read")
+        runner = _runner_with(exec_tool, read_tool, agent=_make_agent(tools_deny=["exec"]))
+
+        _, history = _run_turns(runner, fake_tool_calls(fake_tool_call("exec", {"command": "id"})), fake_text("OK."))
+
+        assert exec_tool.calls == []
+        assert history[-1].content == (
+            "Error: Tool 'exec' is not available to this agent (profile: full). Available tools: read."
+        )
+
+    def test_caller_hook_rejection_reaches_the_model(self) -> None:
+        seen: list[str] = []
+
+        async def pause_read(call: ToolCall) -> str | None:
+            seen.append(call.name)
+            return "read is paused for this customer"
+
+        exec_tool, read_tool = RecordingTool("exec"), RecordingTool("read")
+        runner = _runner_with(exec_tool, read_tool, agent=_make_agent(tools_deny=["exec"]), before_tool_call=pause_read)
+
+        _, history = _run_turns(
+            runner,
+            fake_tool_calls(fake_tool_call("exec", {}), fake_tool_call("read", {})),
+            fake_text("OK."),
+        )
+
+        assert (exec_tool.calls, read_tool.calls) == ([], [])
+        assert seen == ["read"]  # the policy rejected exec before the caller's hook ran
+        assert history[-1].content == "Error: read is paused for this customer"
+
+    def test_require_approval_tool_runs_and_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        write_tool = RecordingTool("write", require_approval=True)
+        runner = _runner_with(write_tool, agent=_make_agent())
+
+        with caplog.at_level(logging.INFO, logger="marvin.tools.policy"):
+            _, history = _run_turns(runner, fake_tool_calls(fake_tool_call("write", {"path": "a"})), fake_text("OK."))
+
+        assert write_tool.calls == [{"path": "a"}]
+        assert history[-1].content == "write ran"
+        assert "auto-approved write (unattended run)" in caplog.messages
 
 
 def _make_bundle(**kwargs: Any) -> CustomerContextBundle:
