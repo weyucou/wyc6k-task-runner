@@ -164,6 +164,26 @@ class TestMainContextBundle:
             assert "task-abc" in entry.content
 
 
+class TestBackgroundProcessCleanup:
+    @pytest.mark.parametrize(
+        ("chat", "exit_code"),
+        [({"return_value": ("reply", [])}, 0), ({"side_effect": RuntimeError("LLM timeout")}, 1)],
+        ids=["run-succeeds", "run-raises"],
+    )
+    def test_background_processes_stopped_when_the_run_ends(self, monkeypatch, chat, exit_code) -> None:
+        monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict()))
+        with (
+            patch("entrypoint.CredentialResolver"),
+            patch("entrypoint.ContextBundleService") as mock_svc_cls,
+            patch("entrypoint.AgentRunner") as mock_runner_cls,
+            patch("entrypoint.stop_background_processes") as mock_stop,
+        ):
+            mock_svc_cls.return_value.pull.return_value = _make_context_bundle()
+            mock_runner_cls.return_value.chat = AsyncMock(**chat)
+            assert entrypoint.main() == exit_code
+        mock_stop.assert_called_once_with()
+
+
 class TestScrubSensitiveFields:
     def test_scrubs_known_sensitive_keys(self) -> None:
         event_dict = {"event": "test", "token": "secret-value", "password": "hunter2"}

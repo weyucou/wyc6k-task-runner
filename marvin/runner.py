@@ -7,6 +7,7 @@ from typing import Any
 from marvin.context import CustomerContextBundle
 from marvin.llm import LLMMessage, LLMResponse
 from marvin.llm.factory import create_client_from_agent_config
+from marvin.loop import run_tool_loop
 from marvin.models import AgentConfig
 from marvin.rate_limiter import rate_limiter_registry
 from marvin.tools import ToolRegistry
@@ -168,7 +169,8 @@ class AgentRunner:
         max_tokens = self.agent.max_tokens if self.agent else 4096
 
         if tools:
-            response, history = await client.generate_with_tools(
+            response, history = await run_tool_loop(
+                client,
                 messages,
                 tools,
                 self.registry,

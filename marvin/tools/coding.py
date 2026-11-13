@@ -6,14 +6,20 @@ import base64
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
+import time
+from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import IO, TYPE_CHECKING, Any
 from urllib.request import Request, urlopen
 
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +222,46 @@ class ApplyPatchTool(BaseTool):
             return ToolResult.from_error(f"Error applying patch: {exc}")
 
 
+_EXEC_DEFAULT_TIMEOUT = 120  # seconds
+_KILL_GRACE_SECONDS = 3.0  # how long a process group gets to exit after SIGTERM before SIGKILL
+_PIPE_DRAIN_SECONDS = 0.5  # how long the output pipes may stay open after the shell exits
+_POLL_SECONDS = 0.05
+_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _signal_group(pgid: int, sig: int) -> bool:
+    """Send `sig` to process group `pgid`; False once the group has no members left."""
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def _poll_until(condition: Callable[[], bool], seconds: float) -> bool:
+    """Check `condition` every _POLL_SECONDS until it holds (True) or `seconds` pass (False)."""
+    deadline = time.monotonic() + seconds
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(_POLL_SECONDS)
+    return True
+
+
+async def _terminate_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGTERM the process group `proc` leads, SIGKILL it if any member outlives the grace period, then reap `proc`."""
+    if _signal_group(proc.pid, signal.SIGTERM):
+        await _poll_until(lambda: not _signal_group(proc.pid, 0), _KILL_GRACE_SECONDS)
+        _signal_group(proc.pid, signal.SIGKILL)
+    await _poll_until(lambda: proc.returncode is not None, _KILL_GRACE_SECONDS)
+
+
+async def _read_into(stream: asyncio.StreamReader, sink: bytearray) -> None:
+    """Copy `stream` into `sink` until EOF; what was read survives cancellation."""
+    while chunk := await stream.read(_READ_CHUNK_BYTES):
+        sink.extend(chunk)
+
+
 class ExecTool(BaseTool):
     """Primary interface for invoking CLI tools and shell commands."""
 
@@ -224,6 +270,8 @@ class ExecTool(BaseTool):
         "The primary interface for invoking CLI tools and shell commands. "
         "Use this to call any installed CLI — gh, git, askcc, aws, terraform, or any other tool on PATH. "
         "Prefer this over specialised wrappers when a CLI already exists for the task. "
+        "Commands run with stdin closed and are terminated on timeout; "
+        "start servers and other background jobs with the `process` tool. "
         "Increase timeout for long-running tools (e.g. askcc spawns a Claude session and may take hours)."
     )
     require_approval = True
@@ -244,46 +292,105 @@ class ExecTool(BaseTool):
         ToolParameter(
             name="timeout",
             type="number",
-            description="Timeout in seconds. Defaults to 1800 (30 min). Increase for long-running CLI tools.",
+            description=(
+                f"Timeout in seconds. Defaults to {_EXEC_DEFAULT_TIMEOUT}. Pass a larger value for long-running CLIs."
+            ),
             required=False,
-            default=1800,
+            default=_EXEC_DEFAULT_TIMEOUT,
         ),
     ]
 
-    async def execute(self, command: str, cwd: str = "", timeout: int = 1800) -> ToolResult:
-        """Execute a shell command."""
+    async def execute(self, command: str, cwd: str = "", timeout: int = _EXEC_DEFAULT_TIMEOUT) -> ToolResult:
+        """Execute a shell command in its own process group, with stdin closed."""
         work_dir = Path(cwd).expanduser() if cwd else None
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=work_dir,
+                start_new_session=True,  # the shell leads a new process group, so killpg reaches its children
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            combined = stdout.decode(errors="replace")
-            err_text = stderr.decode(errors="replace")
-            output = combined + (f"\n[stderr]\n{err_text}" if err_text else "")
-            if proc.returncode == 0:
-                return ToolResult.success(
-                    output=output,
-                    data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
-                )
-            return ToolResult(
-                status=ToolStatus.ERROR,
-                output=output,
-                error=f"Command exited with code {proc.returncode}.",
-                data={"return_code": proc.returncode, "stdout": combined, "stderr": err_text},
-            )
-        except TimeoutError:
-            return ToolResult.from_error(f"Command timed out after {timeout}s.")
         except OSError as exc:
             return ToolResult.from_error(f"Error executing command: {exc}")
 
+        assert proc.stdout is not None  # both pipes exist: stdout and stderr are PIPE
+        assert proc.stderr is not None
+        stdout, stderr = bytearray(), bytearray()
+        readers = [
+            asyncio.create_task(_read_into(proc.stdout, stdout)),
+            asyncio.create_task(_read_into(proc.stderr, stderr)),
+        ]
+        pipes_held = False
+        try:
+            # Watch the shell itself: Process.wait() also waits for background children that inherited the pipes.
+            exited = await _poll_until(lambda: proc.returncode is not None, timeout)
+            if exited:
+                _, pending = await asyncio.wait(readers, timeout=_PIPE_DRAIN_SECONDS)
+                pipes_held = bool(pending)
+            if pipes_held or not exited:
+                await _terminate_process_group(proc)
+                await asyncio.wait(readers, timeout=_PIPE_DRAIN_SECONDS)
+        except asyncio.CancelledError:
+            await _terminate_process_group(proc)
+            raise
+        finally:
+            for reader in readers:
+                reader.cancel()
 
-# Background process registry: session_id -> (process, stdout_buffer, stderr_buffer, thread)
+        out = stdout.decode(errors="replace")
+        err = stderr.decode(errors="replace")
+        output = out + (f"\n[stderr]\n{err}" if err else "")
+        if not exited:
+            message = (
+                f"Command timed out after {timeout}s and was terminated. "
+                "Rerun with a larger timeout (seconds) if it needs more time."
+            )
+            # The LLM clients forward only `output` to the model.
+            return ToolResult.from_error(message, output=f"{output}\n[{message}]")
+        if pipes_held:
+            output += (
+                "\n[Background processes started by the command kept its output open and were terminated. "
+                "Use the `process` tool for long-running jobs.]"
+            )
+        data = {"return_code": proc.returncode, "stdout": out, "stderr": err}
+        if proc.returncode == 0:
+            return ToolResult.success(output=output, data=data)
+        return ToolResult(
+            status=ToolStatus.ERROR,
+            output=output,
+            error=f"Command exited with code {proc.returncode}.",
+            data=data,
+        )
+
+
+# Background process registry: session_id -> {"proc": Popen, "buf": output lines not yet read, "thread": reader}
 _BACKGROUND_PROCESSES: dict[str, dict[str, Any]] = {}
 _BACKGROUND_LOCK = threading.Lock()
+_PROCESS_BUFFER_MAX_LINES = 2000  # per session; older unread lines are dropped
+
+
+def _terminate_process_groups(procs: list[subprocess.Popen]) -> None:
+    """SIGTERM each process group, SIGKILL the groups that outlive one shared grace period, then reap."""
+    alive = [proc for proc in procs if _signal_group(proc.pid, signal.SIGTERM)]
+    deadline = time.monotonic() + _KILL_GRACE_SECONDS
+    while alive and time.monotonic() < deadline:
+        time.sleep(_POLL_SECONDS)
+        # poll() reaps an exited shell; until then its zombie keeps the group alive
+        alive = [proc for proc in alive if proc.poll() is None or _signal_group(proc.pid, 0)]
+    for proc in alive:
+        _signal_group(proc.pid, signal.SIGKILL)
+    for proc in procs:
+        proc.wait()
+
+
+def stop_background_processes() -> None:
+    """Terminate every `process` session; call when an agent run ends."""
+    with _BACKGROUND_LOCK:
+        procs = [entry["proc"] for entry in _BACKGROUND_PROCESSES.values()]
+        _BACKGROUND_PROCESSES.clear()
+    _terminate_process_groups(procs)
 
 
 class ProcessTool(BaseTool):
@@ -293,7 +400,8 @@ class ProcessTool(BaseTool):
     description = (
         "Manage long-running background processes. "
         "Actions: start (launch a background command), status (check if running), "
-        "output (read buffered output), stop (terminate), list (list all sessions)."
+        f"output (read the lines printed since the last output call; up to {_PROCESS_BUFFER_MAX_LINES} are kept), "
+        "stop (terminate), list (list all sessions). Sessions are stopped when the run ends."
     )
     require_approval = True
     parameters = [
@@ -348,22 +456,32 @@ class ProcessTool(BaseTool):
                 return ToolResult.from_error("command is required for action=start")
             if not session_id:
                 return ToolResult.from_error("session_id is required for action=start")
+            with _BACKGROUND_LOCK:
+                if session_id in _BACKGROUND_PROCESSES:
+                    return ToolResult.from_error(
+                        f"Session '{session_id}' already exists. Stop it first or use another session_id."
+                    )
             work_dir = Path(cwd).expanduser() if cwd else None
             try:
                 proc = subprocess.Popen(  # noqa: S602
                     command,
                     shell=True,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=work_dir,
                     text=True,
+                    start_new_session=True,  # its own process group, so stop reaches the shell's children
                 )
-                buf: list[str] = []
+                buf: deque[str] = deque(maxlen=_PROCESS_BUFFER_MAX_LINES)
 
-                def _reader(p: subprocess.Popen, b: list[str]) -> None:
-                    b.extend(p.stdout)  # appends line by line, so `output` sees lines as they arrive
+                def _reader(stream: IO[str], b: deque[str]) -> None:
+                    with stream:  # closed at EOF, so a long-lived worker does not leak one pipe per session
+                        for line in stream:  # line by line, so `output` sees lines as they arrive
+                            with _BACKGROUND_LOCK:
+                                b.append(line)
 
-                t = threading.Thread(target=_reader, args=(proc, buf), daemon=True)
+                t = threading.Thread(target=_reader, args=(proc.stdout, buf), daemon=True)
                 t.start()
                 with _BACKGROUND_LOCK:
                     _BACKGROUND_PROCESSES[session_id] = {"proc": proc, "buf": buf, "thread": t}
@@ -392,15 +510,16 @@ class ProcessTool(BaseTool):
         if action == "output":
             with _BACKGROUND_LOCK:
                 lines = list(buf)
+                buf.clear()
             return ToolResult.success(
                 output="".join(lines),
                 data={"session_id": session_id, "lines": len(lines)},
             )
 
         if action == "stop":
-            proc.terminate()
             with _BACKGROUND_LOCK:
                 _BACKGROUND_PROCESSES.pop(session_id, None)
+            await asyncio.to_thread(_terminate_process_groups, [proc])
             return ToolResult.success(
                 output=f"Session '{session_id}' terminated.",
                 data={"session_id": session_id},

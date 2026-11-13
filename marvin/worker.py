@@ -19,6 +19,7 @@ from marvin.credentials import CredentialResolver
 from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
+from marvin.tools.coding import stop_background_processes
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +70,15 @@ async def process_envelope(envelope: TaskEnvelope) -> dict[str, Any]:
         agent=envelope.agent,
         session_id=envelope.session_id,
     )
-    response_text, history = await runner.chat(
-        envelope.user_message,
-        conversation_history=messages,
-        system_prompt=system_prompt,
-        enable_tools=envelope.enable_tools,
-    )
+    try:
+        response_text, history = await runner.chat(
+            envelope.user_message,
+            conversation_history=messages,
+            system_prompt=system_prompt,
+            enable_tools=envelope.enable_tools,
+        )
+    finally:
+        stop_background_processes()  # the worker is long-lived: sessions must not outlive their task
 
     return {
         "task_id": envelope.task_id,
