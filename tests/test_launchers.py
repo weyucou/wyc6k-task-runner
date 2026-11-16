@@ -318,6 +318,17 @@ class TestDockerLauncherLaunch:
         _, cmd, _ = self._launch()
         assert _forwarded_env_names(cmd) == ["TASK_ENVELOPE_JSON", "CUSTOMER_ID", "GITHUB_TOKEN"]
 
+    def test_bedrock_settings_forwarded_but_not_bearer_token(self, monkeypatch) -> None:
+        # A Bedrock API key in the container would replace the IAM credentials, so it is never forwarded by default.
+        for name in DEFAULT_ENV_PASSTHROUGH:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("BEDROCK_AWS_REGION", "us-west-2")
+        monkeypatch.setenv("BEDROCK_AWS_PROFILE", "bedrock-dev")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-api-key")
+        _, cmd, _ = self._launch()
+        expected = ["TASK_ENVELOPE_JSON", "CUSTOMER_ID", "BEDROCK_AWS_REGION", "BEDROCK_AWS_PROFILE"]
+        assert _forwarded_env_names(cmd) == expected
+
     def test_uses_configured_image_network_and_mount(self, monkeypatch) -> None:
         for name in DEFAULT_ENV_PASSTHROUGH:
             monkeypatch.delenv(name, raising=False)
