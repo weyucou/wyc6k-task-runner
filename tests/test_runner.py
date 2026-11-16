@@ -242,6 +242,14 @@ class TestBuildContextPrefixMemory:
         assert "## 2026-11-12.md" not in prefix  # 4 more do not
         assert "## 2026-11-11.md" not in prefix  # an older entry never fills the gap
 
+    def test_an_oversized_newest_entry_keeps_its_tail(self, monkeypatch) -> None:
+        monkeypatch.setattr(runner, "MEMORY_CONTEXT_MAX_CHARS", 10)
+        bundle = _make_bundle(memory_index="12345", daily_memories=[_memory(13, "abcdefghij"), _memory(12, "x")])
+        prefix = _build_context_prefix(bundle)
+        # Runs append to the day's file, so the tail is the newest text; 5 characters of budget remain.
+        assert prefix.endswith("# Recent Memory\n\n## 2026-11-13.md (truncated)\n\nfghij")
+        assert "## 2026-11-12.md" not in prefix
+
     def test_memory_index_is_truncated_to_the_budget(self, monkeypatch) -> None:
         monkeypatch.setattr(runner, "MEMORY_CONTEXT_MAX_CHARS", 4)
         bundle = _make_bundle(memory_index="123456", daily_memories=[_memory(13, "a")])

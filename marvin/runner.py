@@ -21,7 +21,8 @@ def _build_memory_sections(bundle: CustomerContextBundle) -> list[str]:
     """Format MEMORY.md and the recent memory entries within MEMORY_CONTEXT_MAX_CHARS characters of memory text.
 
     MEMORY.md comes first, truncated to the budget. Entries follow newest first; the first entry
-    that does not fit in the rest of the budget ends the list.
+    that does not fit in the rest of the budget ends the list. When that is the newest entry, its
+    tail is kept instead (runs append to the day's file, so the tail is the newest text).
     """
     budget = MEMORY_CONTEXT_MAX_CHARS
     sections = []
@@ -32,6 +33,8 @@ def _build_memory_sections(bundle: CustomerContextBundle) -> list[str]:
     entries = []
     for entry in sorted(bundle.daily_memories, key=lambda item: (item.date, item.filename), reverse=True):
         if len(entry.content) > budget:
+            if not entries and budget > 0:
+                entries.append(f"## {entry.filename} (truncated)\n\n{entry.content[-budget:]}")
             break
         budget -= len(entry.content)
         entries.append(f"## {entry.filename}\n\n{entry.content}")
