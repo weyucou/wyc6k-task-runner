@@ -1,19 +1,58 @@
 # Copyright (c) 2026 MNKT
 """Built-in tools for the agent system."""
 
+import ast
 import asyncio
 import datetime as dt
 import http.client
-import logging
+import operator
 import urllib.request
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from marvin.settings import ZAATAR_SEARCH_API_URL
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult
 
-logger = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+# Calculator limits. They bound the work of one evaluation, so `calculator` cannot block the event loop.
+_MAX_EXPRESSION_CHARS = 200
+_MAX_EXPONENT = 1000
+_MAX_POWER_BITS = 10_000
+
+
+def _power(base: float, exponent: float) -> float:
+    """Return `base ** exponent`; refuse an exponent or an integer power too large to compute quickly."""
+    if abs(exponent) > _MAX_EXPONENT:
+        raise ValueError(f"exponent is larger than {_MAX_EXPONENT}")
+    if isinstance(base, int) and isinstance(exponent, int) and abs(base).bit_length() * exponent > _MAX_POWER_BITS:
+        raise ValueError(f"power is larger than {_MAX_POWER_BITS} bits")
+    return base**exponent
+
+
+_BINARY_OPERATORS: dict[type[ast.operator], Callable[[Any, Any], Any]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _power,
+}
+_UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[Any], Any]] = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def _evaluate(node: ast.expr) -> Any:
+    """Evaluate int and float literals, parentheses, unary + - and the binary operators above; refuse anything else."""
+    if isinstance(node, ast.Constant) and type(node.value) in {int, float}:
+        return node.value
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _UNARY_OPERATORS:
+        return _UNARY_OPERATORS[type(node.op)](_evaluate(node.operand))
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINARY_OPERATORS:
+        return _BINARY_OPERATORS[type(node.op)](_evaluate(node.left), _evaluate(node.right))
+    raise ValueError("only numbers, parentheses and + - * / // % ** are supported")
 
 
 class DateTimeTool(BaseTool):
@@ -70,37 +109,32 @@ class DateTimeTool(BaseTool):
 
 
 class CalculatorTool(BaseTool):
-    """Tool for performing basic mathematical calculations."""
+    """Tool for evaluating arithmetic expressions."""
 
     name = "calculator"
-    description = "Perform a mathematical calculation. Supports basic arithmetic operations."
+    description = "Evaluate an arithmetic expression: numbers, parentheses and the operators + - * / // % **."
     parameters = [
         ToolParameter(
             name="expression",
             type="string",
-            description="Mathematical expression to evaluate (e.g., '2 + 2', '10 * 5', '100 / 4').",
+            description=(
+                f"Arithmetic expression of up to {_MAX_EXPRESSION_CHARS} characters "
+                "(e.g., '2 + 2', '10 * 5', '2 ** 10')."
+            ),
             required=True,
         ),
     ]
 
-    # Allowed operations for safety
-    ALLOWED_CHARS = set("0123456789+-*/.() ")
-
     async def execute(self, expression: str) -> ToolResult:
-        """Evaluate a mathematical expression."""
-        # Security: Only allow safe characters
-        if not all(c in self.ALLOWED_CHARS for c in expression):
-            return ToolResult.from_error("Expression contains invalid characters")
-
+        """Evaluate an arithmetic expression; the calculator limits keep this short enough for the event loop."""
+        if len(expression) > _MAX_EXPRESSION_CHARS:
+            return ToolResult.from_error(f"Expression is longer than {_MAX_EXPRESSION_CHARS} characters")
         try:
-            # Use eval with restricted builtins for safety
-            result = eval(expression, {"__builtins__": {}}, {})  # noqa: S307
-            return ToolResult.success(
-                output=str(result),
-                data={"expression": expression, "result": result},
-            )
-        except (SyntaxError, NameError, TypeError, ZeroDivisionError) as e:
-            return ToolResult.from_error(f"Calculation error: {e}")
+            result = _evaluate(ast.parse(expression, mode="eval").body)
+            output = str(result)  # ValueError past Python's int-to-str digit limit
+        except (SyntaxError, TypeError, ValueError, ArithmeticError) as exc:
+            return ToolResult.from_error(f"Calculation error: {exc}")
+        return ToolResult.success(output=output, data={"expression": expression, "result": result})
 
 
 class WebSearchTool(BaseTool):
@@ -202,10 +236,10 @@ class MemoryStoreTool(BaseTool):
         ),
     ]
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
-        """Initialize with a memory store."""
+    def __init__(self, config: dict[str, Any] | None = None, memory: dict[str, str] | None = None) -> None:
+        """Initialize with a memory store, shared with MemoryRetrieveTool when passed in."""
         super().__init__(config)
-        self._memory: dict[str, str] = {}
+        self._memory = memory if memory is not None else {}
 
     async def execute(self, key: str, value: str) -> ToolResult:
         """Store a value in memory."""
@@ -233,7 +267,7 @@ class MemoryRetrieveTool(BaseTool):
     def __init__(self, config: dict[str, Any] | None = None, memory: dict[str, str] | None = None) -> None:
         """Initialize with a shared memory store."""
         super().__init__(config)
-        self._memory = memory or {}
+        self._memory = memory if memory is not None else {}
 
     async def execute(self, key: str) -> ToolResult:
         """Retrieve a value from memory."""
@@ -315,8 +349,8 @@ def register_builtin_tools(
 ) -> None:
     """Register all built-in tools with the given registry.
 
-    Registers core tools plus all coding tools (file I/O, shell execution,
-    web access, image analysis, browser automation, and sub-agent sessions).
+    Registers core tools plus all coding tools (file I/O, patching, shell execution,
+    web access and GitHub). A tool name registered twice raises ValueError.
 
     Args:
         registry: The ToolRegistry instance.
@@ -324,20 +358,17 @@ def register_builtin_tools(
     """
     from marvin.tools.coding import register_coding_tools  # noqa: PLC0415
 
+    memory: dict[str, str] = {}  # this registry's scratchpad, shared by memory_store and memory_retrieve
     core_tools = [
         DateTimeTool(),
         CalculatorTool(),
         WebSearchTool(),
         BrowserTool(),
-        MemoryStoreTool(),
-        MemoryRetrieveTool(),
+        MemoryStoreTool(memory=memory),
+        MemoryRetrieveTool(memory=memory),
         MemorySearchTool(session_id=session_id),
     ]
-
     for tool in core_tools:
-        try:
-            registry.register(tool)
-        except ValueError:
-            logger.debug("Tool %s already registered", tool.name)
+        registry.register(tool)
 
     register_coding_tools(registry)

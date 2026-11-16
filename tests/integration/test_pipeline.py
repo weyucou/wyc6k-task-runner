@@ -163,6 +163,9 @@ class TestShortTaskInlinePath:
         assert "Always comment on the issue before finishing." in system_prompt
         assert "Move the issue to in-review once a PR exists." in system_prompt
         assert "Sandbox project used by the pipeline integration tests." in system_prompt
+        # What earlier runs wrote reaches the model.
+        assert "Issue 41 is a duplicate of issue 40." in system_prompt
+        assert "Closed issue 41 as a duplicate of issue 40." in system_prompt
 
 
 class TestMediumTaskFargatePath:

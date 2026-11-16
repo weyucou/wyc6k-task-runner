@@ -2,21 +2,18 @@
 """Tests for marvin tool validation and execution."""
 
 import asyncio
-import base64
 import http.client
 import inspect
 import io
 import os
-import tempfile
+import shutil
 import threading
 import time
 import urllib.error
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import anthropic
 import httpx
 import pytest
 
@@ -27,16 +24,15 @@ from marvin.tools.builtin import (
     DateTimeTool,
     MemorySearchTool,
     WebSearchTool,
+    register_builtin_tools,
 )
 from marvin.tools.coding import (
     _BACKGROUND_PROCESSES,
-    AskccRunTool,
-    BrowserAutomationTool,
+    ApplyPatchTool,
     EditTool,
     ExecTool,
     GitHubIssueTool,
     GitHubPRTool,
-    ImageTool,
     ProcessTool,
     ReadTool,
     WriteTool,
@@ -83,6 +79,39 @@ class TestCalculatorToolValidation:
 
     def test_execute_disallowed_chars(self) -> None:
         result = asyncio.run(self.tool.execute(expression="__import__('os')"))
+        assert result.error is not None
+
+
+class TestCalculatorTool:
+    @pytest.mark.parametrize(
+        ("expression", "output"),
+        [("2**10", "1024"), ("7 // 2 + 7 % 4", "6"), ("-3 + +4", "1"), ("2 ** -1", "0.5"), ("(1 + 2) * 3 / 4", "2.25")],
+    )
+    def test_evaluates_arithmetic(self, expression, output) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression=expression))
+        assert result.error is None
+        assert result.output == output
+
+    def test_power_tower_is_refused_without_blocking(self) -> None:
+        start = time.monotonic()
+        result = asyncio.run(CalculatorTool().execute(expression="9**9**9**9"))
+        assert time.monotonic() - start < 1
+        assert "exponent" in result.error
+
+    def test_result_too_long_to_print_is_an_error(self) -> None:
+        # Each factor passes the power limits; the product has ~6000 digits, past Python's int-to-str limit.
+        result = asyncio.run(CalculatorTool().execute(expression="999**1000 * 999**1000"))
+        assert result.error.startswith("Calculation error:")
+
+    def test_long_expression_is_rejected(self) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression="1+" * 100 + "1"))
+        assert "200 characters" in result.error
+
+    @pytest.mark.parametrize(
+        "expression", ["abs(-1)", "x + 1", "'a' * 3", "1 < 2", "True + 1", "1j", "1 << 2", "(1, 2)"]
+    )
+    def test_rejects_anything_but_numbers_and_arithmetic(self, expression) -> None:
+        result = asyncio.run(CalculatorTool().execute(expression=expression))
         assert result.error is not None
 
 
@@ -369,6 +398,62 @@ class TestToolRegistry:
         assert tools[0]["function"]["name"] == "calculator"
 
 
+# ---- register_builtin_tools ----
+
+# Every tool the agent is offered. README → Available Tools documents the same set: update both together.
+REGISTERED_TOOLS = {
+    # marvin/tools/builtin.py
+    "get_datetime",
+    "calculator",
+    "web_search",
+    "browser_fetch",
+    "memory_store",
+    "memory_retrieve",
+    "memory_search",
+    # marvin/tools/coding.py
+    "read",
+    "write",
+    "edit",
+    "apply_patch",
+    "exec",
+    "process",
+    "web_fetch",
+    "github_issue",
+    "github_pr",
+}
+
+
+class TestRegisterBuiltinTools:
+    def test_registers_exactly_the_documented_tools(self) -> None:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        assert set(registry.list_tools()) == REGISTERED_TOOLS
+        assert isinstance(registry.get("web_search"), WebSearchTool)  # zaatar-search-api
+
+    def test_a_duplicate_tool_name_fails_registration(self) -> None:
+        registry = ToolRegistry()
+        registry.register(WebSearchTool())
+        with pytest.raises(ValueError, match="'web_search' is already registered"):
+            register_builtin_tools(registry)
+
+    def test_memory_retrieve_reads_what_memory_store_wrote(self) -> None:
+        registry = ToolRegistry()
+        register_builtin_tools(registry)
+        stored = asyncio.run(registry.execute("memory_store", {"key": "plan", "value": "ship it"}))
+        retrieved = asyncio.run(registry.execute("memory_retrieve", {"key": "plan"}))
+        assert stored.error is None
+        assert retrieved.error is None
+        assert retrieved.output == "ship it"
+
+    def test_memory_is_scoped_to_one_registry(self) -> None:
+        first, second = ToolRegistry(), ToolRegistry()
+        register_builtin_tools(first)
+        register_builtin_tools(second)
+        asyncio.run(first.execute("memory_store", {"key": "plan", "value": "ship it"}))
+        result = asyncio.run(second.execute("memory_retrieve", {"key": "plan"}))
+        assert result.error == "Key 'plan' not found in memory."
+
+
 # ---- GitHubIssueTool ----
 
 
@@ -538,119 +623,6 @@ class TestGitHubPRTool:
         assert "gh exited with code 1" in result.error
 
 
-# ---- AskccRunTool ----
-
-
-class TestAskccRunTool:
-    def setup_method(self) -> None:
-        self.tool = AskccRunTool()
-
-    def test_require_approval_is_true(self) -> None:
-        assert self.tool.require_approval is True
-
-    def test_missing_required_action(self) -> None:
-        is_valid, error = self.tool.validate_params({"issue_url": "https://github.com/o/r/issues/1"})
-        assert not is_valid
-        assert "action" in error
-
-    def test_missing_required_issue_url(self) -> None:
-        is_valid, error = self.tool.validate_params({"action": "prepare"})
-        assert not is_valid
-        assert "issue_url" in error
-
-    def test_invalid_action_enum(self) -> None:
-        is_valid, error = self.tool.validate_params(
-            {"action": "deploy", "issue_url": "https://github.com/o/r/issues/1"}
-        )
-        assert not is_valid
-        assert "must be one of" in error.lower()
-
-    def test_valid_params_each_action(self) -> None:
-        for action in ("prepare", "develop", "review", "diagnose", "explore", "plan"):
-            is_valid, error = self.tool.validate_params(
-                {"action": action, "issue_url": "https://github.com/o/r/issues/1"}
-            )
-            assert is_valid, f"action={action} should be valid, got error: {error}"
-            assert error is None
-
-    def test_missing_askcc_cli_returns_error(self) -> None:
-        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError):
-            result = asyncio.run(self.tool.execute(action="prepare", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is not None
-        assert "'askcc' CLI not found" in result.error
-
-    def test_nonzero_exit_returns_error(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 1
-        mock_proc.communicate = AsyncMock(return_value=(b"", b"something went wrong"))
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is not None
-        assert "askcc exited with code 1" in result.error
-
-    def test_success(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"done", b""))
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="plan", issue_url="https://github.com/o/r/issues/1"))
-        assert result.error is None
-        assert "done" in result.output
-
-    def test_timeout_terminates_process_and_returns_error(self) -> None:
-        mock_proc = MagicMock()
-        mock_proc.returncode = None
-        mock_proc.communicate = AsyncMock(side_effect=TimeoutError)
-        mock_proc.wait = AsyncMock(return_value=None)
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            result = asyncio.run(self.tool.execute(action="develop", issue_url="https://github.com/o/r/issues/1"))
-        mock_proc.terminate.assert_called_once()
-        assert result.error is not None
-        assert "timed out" in result.error
-
-    def test_config_timeout_override(self) -> None:
-        custom_timeout = 600
-        mock_proc = MagicMock()
-        mock_proc.returncode = 0
-        mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
-        with (
-            patch("asyncio.create_subprocess_exec", return_value=mock_proc),
-            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait,
-        ):
-            asyncio.run(
-                self.tool.execute(
-                    action="review",
-                    issue_url="https://github.com/o/r/issues/1",
-                    config={"timeout": custom_timeout},
-                )
-            )
-        _, kwargs = mock_wait.call_args
-        assert kwargs.get("timeout") == custom_timeout
-
-
-# ---- ImageTool ----
-
-
-class TestImageToolVision:
-    def test_call_vision_returns_text_after_non_text_block(self) -> None:
-        reply = SimpleNamespace(content=[SimpleNamespace(type="thinking"), SimpleNamespace(type="text", text="A cat.")])
-        sdk_create = anthropic.Anthropic(api_key="x").messages.create
-        with patch("anthropic.Anthropic") as client_cls:
-            create = client_cls.return_value.messages.create
-            create.return_value = reply
-            result = ImageTool()._call_vision("key", "aGk=", "image/png", "Describe this image.")
-        assert result == "A cat."
-        inspect.signature(sdk_create).bind(**create.call_args.kwargs)  # request fits the installed SDK
-
-    def test_load_image_reads_a_local_file_under_home(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setenv("HOME", str(tmp_path))
-        raw = b"\x89PNG\r\n\x1a\n" + bytes(8)
-        (tmp_path / "pic.png").write_bytes(raw)
-        encoded, media_type = asyncio.run(ImageTool()._load_image("~/pic.png"))
-        assert base64.b64decode(encoded) == raw
-        assert media_type == "image/png"
-
-
 # ---- File tools: read / write / edit ----
 
 
@@ -689,6 +661,17 @@ class TestFileTools:
         result = asyncio.run(EditTool().execute(path=str(target), old_string=old_string, new_string="x"))
         assert error in result.error
         assert target.read_text(encoding="utf-8") == "a = 1\nb = 2\n"
+
+    @pytest.mark.skipif(
+        shutil.which("patch") is None, reason="needs the patch CLI (the agent-worker image installs it)"
+    )
+    def test_apply_patch_applies_a_unified_diff(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.chdir(tmp_path)  # patch runs in the working directory
+        (tmp_path / "notes.txt").write_text("one\ntwo\n", encoding="utf-8")
+        diff = "--- a/notes.txt\n+++ b/notes.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+three\n"
+        result = asyncio.run(ApplyPatchTool().execute(patch=diff))
+        assert result.error is None
+        assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == "one\nthree\n"
 
 
 # ---- ExecTool / ProcessTool ----
@@ -871,24 +854,3 @@ class TestProcessTool:
         coding.stop_background_processes()
         assert _BACKGROUND_PROCESSES == {}
         assert not any(_alive(pid) for pid in pids)
-
-
-# ---- BrowserAutomationTool ----
-
-
-class TestBrowserAutomationTool:
-    def test_screenshot_defaults_to_the_system_temp_dir(self, tmp_path, monkeypatch) -> None:
-        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-        page = AsyncMock()
-        browser = AsyncMock()
-        browser.new_page.return_value = page
-        playwright = MagicMock()
-        playwright.chromium.launch = AsyncMock(return_value=browser)
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=playwright)
-        session.__aexit__ = AsyncMock(return_value=None)
-        with patch("marvin.tools.coding.async_playwright", return_value=session):
-            result = asyncio.run(BrowserAutomationTool().execute(action="screenshot"))
-        expected = str(tmp_path / "screenshot.png")
-        page.screenshot.assert_awaited_once_with(path=expected, full_page=True)
-        assert result.data == {"path": expected}
