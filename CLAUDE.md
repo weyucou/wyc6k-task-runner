@@ -12,7 +12,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 
 | File | Purpose |
 |------|---------|
-| `marvin/models.py` | `AgentConfig`, `TaskEnvelope`, `LLMProvider`, `ToolProfile` — core Pydantic models |
+| `marvin/models.py` | `TaskEnvelope` (v1 wire contract), `AgentSpec` (its `agent` block), `TaskAction`, `AgentConfig` (runner-internal), `LLMProvider`, `ToolProfile` — core Pydantic models |
 | `marvin/worker.py` | SQS consumer loop and `main()` entry point (`python -m marvin`) |
 | `marvin/__main__.py` | Module entry point — delegates to `worker.main()` |
 | `marvin/launchers/` | Launcher (`python -m marvin.launchers`): SQS → `DockerLauncher` (`docker run`) or `EcsLauncher` (`ecs:RunTask`) per envelope, chosen by `get_launcher()` from `COMPUTE_BACKEND` |
@@ -31,6 +31,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
 | `tests/` | pytest tests (no Django test runner) |
 | `tests/fake_llm.py` | `FakeLLMClient` — scripted LLM for loop tests (`fake_text`, `fake_tool_calls`, `fake_error`, `fake_max_tokens`); records each request |
+| `tests/fixtures/envelopes/` | The spec's example v1 envelopes (verbatim) and the sender's pre-contract shape, which must fail |
 | `tests/integration/` | End-to-end pipeline tests (SQS → agent → GitHub → S3 memory) on moto; `control_plane.py` holds the routing stand-in that belongs to `wyc6k-task-manager` |
 | `pyproject.toml` | Project config; pure Python, no Django deps |
 
@@ -76,3 +77,4 @@ Full launcher settings: README → Launcher settings.
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
 - Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
 - Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
+- Do not change `TaskEnvelope`'s wire fields here first — weyucou/wyc6k-spec owns the contract (ADR-008); land the spec change, then conform.

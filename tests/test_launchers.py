@@ -4,6 +4,7 @@
 import json
 import signal
 import subprocess
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -30,16 +31,22 @@ ECS_ENV = {
     "ECS_SUBNETS": "subnet-a, subnet-b",
     "ECS_SECURITY_GROUPS": "sg-a",
 }
+PRE_CONTRACT_ENVELOPE_JSON = (Path(__file__).parent / "fixtures" / "envelopes" / "pre_contract_sender.json").read_text(
+    encoding="utf-8"
+)
 
 
 def _envelope_json(**kwargs: Any) -> str:
     envelope = {
+        "schema_version": 1,
         "task_id": "task-001",
         "customer_id": "cust-001",
-        "session_id": "sess-001",
-        "agent": {"name": "test-agent"},
-        "s3_context_prefix": "s3://bucket/customers/cust-001/projects/repo",
-        "user_message": "Hello, agent!",
+        "task_source_id": 12,
+        "repository": "acme-corp/billing-api",
+        "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+        "action": "develop",
+        "agent": {"provider": "anthropic", "model_name": "claude-sonnet-5-5", "tool_profile": "coding"},
+        "context_s3_prefix": "s3://bucket/customers/cust-001/projects/billing-api/",
     }
     envelope.update(kwargs)
     return json.dumps(envelope)
@@ -437,7 +444,11 @@ class TestPollOnce:
         assert len(launcher.launched) == 2
         assert _message_counts(sqs, queue_url) == (0, 1)
 
-    @pytest.mark.parametrize("body", ["not-json{{{", json.dumps({"task_id": "x"})])
+    @pytest.mark.parametrize(
+        "body",
+        ["not-json{{{", json.dumps({"task_id": "x"}), PRE_CONTRACT_ENVELOPE_JSON],
+        ids=["malformed-json", "missing-fields", "pre-contract-sender"],
+    )
     def test_invalid_envelope_not_launched_and_retained(self, sqs_queue, body) -> None:
         sqs, queue_url = sqs_queue
         sqs.send_message(QueueUrl=queue_url, MessageBody=body)
