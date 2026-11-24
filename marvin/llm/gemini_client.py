@@ -55,7 +55,8 @@ class GeminiClient(BaseLLMClient):
                 continue
 
             if msg.role == MessageRole.TOOL:
-                # Tool results use function_response
+                # Tool results use function_response; Gemini reads an "error" key as a failed call
+                response_key = "error" if msg.is_error else "result"
                 result.append(
                     {
                         "role": "user",
@@ -63,7 +64,7 @@ class GeminiClient(BaseLLMClient):
                             {
                                 "function_response": {
                                     "name": msg.name or "unknown",
-                                    "response": {"result": msg.content},
+                                    "response": {response_key: msg.content},
                                 }
                             }
                         ],

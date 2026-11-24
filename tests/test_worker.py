@@ -16,23 +16,48 @@ from moto import mock_aws
 import entrypoint
 from marvin import worker
 from marvin.context import CustomerContextBundle, MemoryEntry
-from marvin.models import AgentConfig, TaskEnvelope
+from marvin.models import TaskEnvelope
 from tests.fake_llm import FakeLLMClient, fake_text
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine, Iterator
 
 LEAK_MARKER = "sk-ant-LEAKMARKER"
-# No user_message, and agent.api_key ends the JSON: pydantic's truncated input_value keeps the input's tail.
+# agent.api_key is rejected at parse. It ends the JSON, where pydantic's truncated input_value would show it.
 LEAKY_ENVELOPE_JSON = json.dumps(
     {
+        "schema_version": 1,
         "task_id": "task-001",
         "customer_id": "cust-001",
-        "session_id": "sess-001",
-        "s3_context_prefix": "s3://bucket/customers/cust-001/projects/repo",
-        "agent": {"name": "test-agent", "api_key": LEAK_MARKER},
+        "task_source_id": 12,
+        "repository": "acme-corp/billing-api",
+        "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+        "action": "develop",
+        "context_s3_prefix": "s3://bucket/customers/cust-001/projects/billing-api/",
+        "agent": {
+            "provider": "anthropic",
+            "model_name": "claude-sonnet-5-5",
+            "tool_profile": "coding",
+            "api_key": LEAK_MARKER,
+        },
     }
 )
+
+
+def _make_envelope_dict(**kwargs: Any) -> dict[str, Any]:
+    envelope = {
+        "schema_version": 1,
+        "task_id": "task-001",
+        "customer_id": "cust-001",
+        "task_source_id": 12,
+        "repository": "acme-corp/billing-api",
+        "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+        "action": "develop",
+        "agent": {"provider": "anthropic", "model_name": "claude-sonnet-5-5", "tool_profile": "coding"},
+        "context_s3_prefix": "s3://bucket/customers/cust-001/projects/billing-api/",
+    }
+    envelope.update(kwargs)
+    return envelope
 
 
 @pytest.fixture(autouse=True)
@@ -60,8 +85,8 @@ def sqs_queue(monkeypatch) -> Iterator[tuple[Any, str]]:
 class TestPollOnce:
     @pytest.mark.parametrize(
         ("body", "named"),
-        [(LEAKY_ENVELOPE_JSON, "user_message"), (LEAKY_ENVELOPE_JSON[:-1], "json_invalid")],
-        ids=["missing-field", "truncated-json"],
+        [(LEAKY_ENVELOPE_JSON, "agent.api_key"), (LEAKY_ENVELOPE_JSON[:-1], "json_invalid")],
+        ids=["api-key-rejected", "truncated-json"],
     )
     def test_invalid_envelope_logged_without_input_and_retained(self, sqs_queue, caplog, body, named) -> None:
         sqs, queue_url = sqs_queue
@@ -76,17 +101,42 @@ class TestPollOnce:
         )["Attributes"]
         assert attributes["ApproximateNumberOfMessagesNotVisible"] == "1"  # not deleted: redelivered, then DLQ
 
+    def test_resolved_key_passed_to_process_envelope_and_message_deleted(self, sqs_queue, caplog) -> None:
+        sqs, queue_url = sqs_queue
+        sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(_make_envelope_dict()))
+        result = {"task_id": "task-001", "response": "reply"}
+        with (
+            patch("marvin.worker.CredentialResolver.resolve", return_value="sk-resolved"),
+            patch("marvin.worker.process_envelope", new=AsyncMock(return_value=result)) as mock_process,
+            caplog.at_level(logging.INFO, logger="marvin.worker"),
+        ):
+            worker.poll_once(sqs)
+        envelope, api_key = mock_process.call_args.args
+        assert envelope == TaskEnvelope.model_validate(_make_envelope_dict())
+        assert api_key == "sk-resolved"
+        assert "acme-corp/billing-api" in caplog.text
+        assert "https://github.com/acme-corp/billing-api/issues/42" in caplog.text
+        attributes = sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessages", "ApproximateNumberOfMessagesNotVisible"]
+        )["Attributes"]
+        assert attributes == {"ApproximateNumberOfMessages": "0", "ApproximateNumberOfMessagesNotVisible": "0"}
+
 
 class TestProcessEnvelope:
+    def test_runner_gets_agent_config_and_task_prompt(self) -> None:
+        envelope = TaskEnvelope.model_validate(_make_envelope_dict())
+        with (
+            patch("marvin.worker.ContextBundleService") as mock_svc_cls,
+            patch("marvin.worker.AgentRunner") as mock_runner_cls,
+        ):
+            mock_runner_cls.return_value.chat = AsyncMock(return_value=("reply", []))
+            asyncio.run(worker.process_envelope(envelope, "sk-resolved"))
+        mock_svc_cls.return_value.pull.assert_called_once_with("s3://bucket/customers/cust-001/projects/billing-api/")
+        assert mock_runner_cls.call_args.kwargs["agent"] == envelope.agent_config("sk-resolved")
+        assert mock_runner_cls.return_value.chat.call_args.args[0] == envelope.task_prompt()
+
     def test_background_processes_stopped_when_the_run_raises(self) -> None:
-        envelope = TaskEnvelope(
-            task_id="task-001",
-            customer_id="cust-001",
-            session_id="sess-001",
-            agent=AgentConfig(name="test-agent"),
-            s3_context_prefix="s3://bucket/customers/cust-001/projects/repo",
-            user_message="Hello, agent!",
-        )
+        envelope = TaskEnvelope.model_validate(_make_envelope_dict())
         with (
             patch("marvin.worker.ContextBundleService"),
             patch("marvin.worker.AgentRunner") as mock_runner_cls,
@@ -94,7 +144,7 @@ class TestProcessEnvelope:
         ):
             mock_runner_cls.return_value.chat = AsyncMock(side_effect=RuntimeError("LLM timeout"))
             with pytest.raises(RuntimeError, match="LLM timeout"):
-                asyncio.run(worker.process_envelope(envelope))
+                asyncio.run(worker.process_envelope(envelope, None))
         mock_stop.assert_called_once_with()
 
 
@@ -119,32 +169,21 @@ def _system_prompt_sent(run: Coroutine[Any, Any, Any]) -> str | None:
 
 
 class TestProcessEnvelopeSystemPrompt:
-    def _envelope(self) -> TaskEnvelope:
-        return TaskEnvelope(
-            task_id="task-001",
-            customer_id="cust-001",
-            session_id="sess-001",
-            agent=AgentConfig(name="test-agent", system_prompt="Agent prompt."),
-            s3_context_prefix="s3://bucket/customers/cust-001/projects/repo",
-            user_message="Hello, agent!",
-        )
-
-    def test_includes_the_context_bundle_and_the_agent_prompt(self) -> None:
+    def test_includes_the_context_bundle(self) -> None:
+        envelope = TaskEnvelope.model_validate(_make_envelope_dict())
         with patch("marvin.worker.ContextBundleService") as service_cls:
             service_cls.return_value.pull.return_value = _context_bundle()
-            prompt = _system_prompt_sent(worker.process_envelope(self._envelope()))
+            prompt = _system_prompt_sent(worker.process_envelope(envelope, None))
         assert prompt is not None
-        assert "Agent prompt." in prompt
         for text in ("Customer rules.", "Deploy SOP.", "Project goals.", "Memory index.", "Previous run."):
             assert text in prompt
-            assert prompt.index(text) < prompt.index("Agent prompt.")
 
     def test_matches_the_entrypoint_system_prompt(self) -> None:
-        envelope, bundle = self._envelope(), _context_bundle()
+        envelope, bundle = TaskEnvelope.model_validate(_make_envelope_dict()), _context_bundle()
         with patch("marvin.worker.ContextBundleService") as service_cls:
             service_cls.return_value.pull.return_value = bundle
-            worker_prompt = _system_prompt_sent(worker.process_envelope(envelope))
-        assert worker_prompt == _system_prompt_sent(entrypoint._run_agent(envelope, bundle))
+            worker_prompt = _system_prompt_sent(worker.process_envelope(envelope, None))
+        assert worker_prompt == _system_prompt_sent(entrypoint._run_agent(envelope, None, bundle))
 
 
 class TestMain:

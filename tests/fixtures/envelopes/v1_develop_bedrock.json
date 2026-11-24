@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "task_id": "7dac3334-bd92-4fe7-8d92-6ef908240394",
+  "customer_id": "7",
+  "task_source_id": 12,
+  "repository": "acme-corp/billing-api",
+  "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+  "action": "develop",
+  "agent": {
+    "provider": "bedrock",
+    "model_name": "anthropic.claude-opus-5-5",
+    "tool_profile": "coding",
+    "max_tokens": 16000
+  },
+  "context_s3_prefix": "s3://weyucou-agent-contexts/acme-corp/projects/billing-api/",
+  "duration_hint_seconds": 3600,
+  "max_tool_iterations": 10,
+  "github_token_secret_id": "weyucou/agent/acme-corp/github"
+}

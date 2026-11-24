@@ -8,22 +8,25 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from marvin.credentials import CredentialResolver, _fetch_secret
-from marvin.models import AgentConfig, LLMProvider, TaskEnvelope
+from marvin.models import LLMProvider, TaskEnvelope
 
 NON_ANTHROPIC_PROVIDERS = [provider for provider in LLMProvider if provider != LLMProvider.ANTHROPIC]
 
 
 def _make_envelope(**kwargs) -> TaskEnvelope:
     defaults = {
+        "schema_version": 1,
         "task_id": "t-001",
         "customer_id": "c-001",
-        "session_id": "s-001",
-        "agent": AgentConfig(name="test-agent"),
-        "s3_context_prefix": "s3://bucket/prefix",
-        "user_message": "Hello",
+        "task_source_id": 12,
+        "repository": "acme-corp/billing-api",
+        "issue_url": "https://github.com/acme-corp/billing-api/issues/42",
+        "action": "develop",
+        "agent": {"provider": "anthropic", "model_name": "claude-sonnet-5-5", "tool_profile": "coding"},
+        "context_s3_prefix": "s3://bucket/prefix",
     }
     defaults.update(kwargs)
-    return TaskEnvelope(**defaults)
+    return TaskEnvelope.model_validate(defaults)
 
 
 class TestFetchSecret:
@@ -68,13 +71,15 @@ class TestCredentialResolver:
             CredentialResolver().resolve(envelope)
         assert os.environ["GITHUB_TOKEN"] == "gh-tok-abc"
 
-    def test_anthropic_key_secret_id_sets_agent_api_key(self) -> None:
+    def test_anthropic_key_secret_id_returns_key(self) -> None:
         envelope = _make_envelope(anthropic_api_key_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:ak")
+        before = envelope.model_dump()
         mock_client = MagicMock()
         mock_client.get_secret_value.return_value = {"SecretString": "sk-ant-123"}
         with patch("marvin.credentials.get_secrets_manager_client", return_value=mock_client):
-            CredentialResolver().resolve(envelope)
-        assert envelope.agent.api_key == "sk-ant-123"
+            api_key = CredentialResolver().resolve(envelope)
+        assert api_key == "sk-ant-123"
+        assert envelope.model_dump() == before  # the key is returned, never written to the envelope
 
     def test_fallback_to_env_github_token(self, monkeypatch) -> None:
         monkeypatch.setenv("GITHUB_TOKEN", "env-gh-token")
@@ -85,26 +90,23 @@ class TestCredentialResolver:
     def test_fallback_to_env_anthropic_key(self, monkeypatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-ant-key")
         envelope = _make_envelope()  # no secret ID fields
-        CredentialResolver().resolve(envelope)
-        assert envelope.agent.api_key == "env-ant-key"
+        assert CredentialResolver().resolve(envelope) == "env-ant-key"
 
     @pytest.mark.parametrize("provider", NON_ANTHROPIC_PROVIDERS)
-    def test_env_anthropic_key_leaves_other_providers_key(self, monkeypatch, provider) -> None:
+    def test_env_anthropic_key_not_returned_for_other_providers(self, monkeypatch, provider) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-ant-key")
-        envelope = _make_envelope(agent=AgentConfig(name="test-agent", provider=provider, api_key="own-key"))
-        CredentialResolver().resolve(envelope)
-        assert envelope.agent.api_key == "own-key"
+        envelope = _make_envelope(agent={"provider": provider, "model_name": "some-model", "tool_profile": "coding"})
+        assert CredentialResolver().resolve(envelope) is None
 
     @pytest.mark.parametrize("provider", NON_ANTHROPIC_PROVIDERS)
     def test_anthropic_key_secret_not_fetched_for_other_providers(self, provider) -> None:
         envelope = _make_envelope(
-            agent=AgentConfig(name="test-agent", provider=provider, api_key="own-key"),
+            agent={"provider": provider, "model_name": "some-model", "tool_profile": "coding"},
             anthropic_api_key_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:ak",
         )
         with patch("marvin.credentials.get_secrets_manager_client") as client_factory:
-            CredentialResolver().resolve(envelope)
+            assert CredentialResolver().resolve(envelope) is None
         client_factory.assert_not_called()
-        assert envelope.agent.api_key == "own-key"
 
     def test_raises_before_processing_on_secret_fetch_failure(self) -> None:
         envelope = _make_envelope(github_token_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:bad")
@@ -120,9 +122,8 @@ class TestCredentialResolver:
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         envelope = _make_envelope()
-        CredentialResolver().resolve(envelope)
-        # No env var set, no api_key set — should not raise
-        assert envelope.agent.api_key is None
+        # No env var set, no secret ID — should not raise
+        assert CredentialResolver().resolve(envelope) is None
 
     def test_does_not_log_secret_value(self, monkeypatch, caplog) -> None:
         """CredentialResolver must never log resolved secret values."""
