@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from marvin.tools import coding
+from marvin.tools.base import ToolResult, ToolStatus
 from marvin.tools.builtin import (
     BrowserTool,
     CalculatorTool,
@@ -323,6 +324,28 @@ class TestToolSchemaGeneration:
         schema = tool.get_schema()
         assert "num_results" in schema["properties"]
         assert schema["properties"]["num_results"]["default"] == 5
+
+
+# ---- ToolResult ----
+
+
+class TestToolResult:
+    @pytest.mark.parametrize(
+        ("result", "content"),
+        [
+            (ToolResult.success("4"), "4"),
+            (ToolResult.from_error("boom"), "Error: boom"),
+            (ToolResult.from_error("boom", output="partial"), "partial\n\nError: boom"),
+            (ToolResult(status=ToolStatus.ERROR, output=""), "Error: Tool failed"),
+        ],
+        ids=["success", "error", "error-after-partial-output", "error-without-message"],
+    )
+    def test_to_model_content(self, result: ToolResult, content: str) -> None:
+        assert result.to_model_content() == content
+
+    def test_is_error(self) -> None:
+        assert ToolResult.from_error("boom").is_error
+        assert not ToolResult.success("4").is_error
 
 
 # ---- ToolRegistry ----
@@ -747,7 +770,7 @@ class TestExecTool:
         assert time.monotonic() - start < 3
         assert "timed out" in result.error
         assert "larger timeout" in result.error
-        assert result.error in result.output  # the LLM clients forward only `output` to the model
+        assert result.to_model_content().count(result.error) == 1  # the model sees the message once
         assert not _alive(int((tmp_path / "pid").read_text(encoding="utf-8")))
 
     def test_timeout_escalates_to_sigkill(self, tmp_path, monkeypatch) -> None:

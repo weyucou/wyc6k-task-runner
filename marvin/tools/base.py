@@ -40,6 +40,18 @@ class ToolResult:
             result["error"] = self.error
         return result
 
+    @property
+    def is_error(self) -> bool:
+        """True when the tool call failed."""
+        return self.status == ToolStatus.ERROR
+
+    def to_model_content(self) -> str:
+        """The text the model sees: the output, then the error message when the call failed."""
+        if not self.is_error:
+            return self.output
+        error = f"Error: {self.error or 'Tool failed'}"
+        return f"{self.output}\n\n{error}" if self.output else error
+
     @classmethod
     def success(cls, output: str, data: dict[str, Any] | None = None) -> ToolResult:
         """Create a successful result."""

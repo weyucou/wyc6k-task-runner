@@ -347,8 +347,7 @@ class ExecTool(BaseTool):
                 f"Command timed out after {timeout}s and was terminated. "
                 "Rerun with a larger timeout (seconds) if it needs more time."
             )
-            # The LLM clients forward only `output` to the model.
-            return ToolResult.from_error(message, output=f"{output}\n[{message}]")
+            return ToolResult.from_error(message, output=output)
         if pipes_held:
             output += (
                 "\n[Background processes started by the command kept its output open and were terminated. "

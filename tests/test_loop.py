@@ -2,6 +2,7 @@
 """Tests for the shared tool-call loop, driven by the scripted FakeLLMClient."""
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -10,6 +11,7 @@ from marvin.loop import run_tool_loop
 from marvin.tools import ToolRegistry
 from marvin.tools.base import BaseTool, ToolResult
 from marvin.tools.builtin import CalculatorTool
+from marvin.tools.coding import ExecTool
 from tests.fake_llm import (
     FakeLLMClient,
     fake_error,
@@ -34,7 +36,7 @@ class RaisingTool(BaseTool):
 
 
 class BadSchemaTool(BaseTool):
-    """Raises in `validate_params`, which `ToolRegistry.execute` calls outside its `try`."""
+    """Raises in `validate_params`, before the tool body runs."""
 
     name = "bad_schema"
     description = "Parameter validation raises."
@@ -111,6 +113,7 @@ class TestRunToolLoop:
             "calculator",
             "4",
         )
+        assert not tool_result.is_error
         # The final answer is not appended to the history; AgentRunner.chat appends it.
         assert history == [user, assistant, tool_result]
         assert messages == [QUESTION]
@@ -134,24 +137,55 @@ class TestRunToolLoop:
         assert [(m.tool_call_id, m.content) for m in history[2:]] == [(first.id, "4"), (second.id, "9")]
 
     @pytest.mark.asyncio
-    async def test_unknown_tool_gets_an_empty_result(self, registry: ToolRegistry) -> None:
+    async def test_unknown_tool_lists_the_available_tools(self, registry: ToolRegistry) -> None:
         tool_result = await _run_one_call(registry, "nope", {})
 
-        # ToolRegistry.execute returns ToolResult.from_error with output="" (#83).
-        assert tool_result.content == ""
+        assert tool_result.is_error
+        assert tool_result.content == "Error: Tool 'nope' not found. Available tools: calculator, raising, bad_schema."
 
     @pytest.mark.asyncio
-    async def test_raising_tool_gets_an_empty_result(self, registry: ToolRegistry) -> None:
+    async def test_invalid_arguments_ask_for_a_corrected_call(self, registry: ToolRegistry) -> None:
+        tool_result = await _run_one_call(registry, "calculator", {})
+
+        assert tool_result.is_error
+        assert tool_result.content == (
+            "Error: Invalid arguments for tool 'calculator': Missing required parameter: expression. "
+            "Fix the arguments and call the tool again."
+        )
+
+    @pytest.mark.asyncio
+    async def test_tool_exception_is_reported(self, registry: ToolRegistry) -> None:
         tool_result = await _run_one_call(registry, "raising", {})
 
-        # ToolRegistry.execute catches the exception and returns output="" (#83).
-        assert tool_result.content == ""
+        assert tool_result.is_error
+        assert tool_result.content == "Error: tool exploded"
 
     @pytest.mark.asyncio
     async def test_error_outside_the_tool_body_is_reported(self, registry: ToolRegistry) -> None:
         tool_result = await _run_one_call(registry, "bad_schema", {})
 
-        assert tool_result.content == "Error executing tool: schema exploded"
+        assert tool_result.is_error
+        assert tool_result.content == "Error: schema exploded"
+
+    @pytest.mark.asyncio
+    async def test_registry_failure_is_reported(self, registry: ToolRegistry, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(registry, "execute", AsyncMock(side_effect=RuntimeError("registry exploded")))
+
+        tool_result = await _run_one_call(registry, "calculator", {"expression": "2 + 2"})
+
+        assert tool_result.is_error
+        assert tool_result.content == "Error executing tool: registry exploded"
+
+    @pytest.mark.asyncio
+    async def test_non_zero_exit_reports_the_exit_code(self, registry: ToolRegistry) -> None:
+        registry.register(ExecTool())
+
+        tool_result = await _run_one_call(registry, "exec", {"command": "echo partial; exit 3"})
+
+        # The partial output comes first, the error last.
+        assert tool_result.is_error
+        assert tool_result.content.startswith("partial\n")
+        assert tool_result.content.endswith("Error: Command exited with code 3.")
 
     @pytest.mark.asyncio
     async def test_iteration_cap_ends_with_a_call_without_tools(self, registry: ToolRegistry) -> None:

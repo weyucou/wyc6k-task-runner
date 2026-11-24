@@ -71,10 +71,12 @@ async def run_tool_loop(
 
             try:
                 result = await registry.execute(tool_call.name, tool_call.arguments)
-                tool_output = result.output
+                tool_output = result.to_model_content()
+                is_error = result.is_error
             except Exception as e:
                 logger.exception("Tool execution failed: %s", tool_call.name)
                 tool_output = f"Error executing tool: {e}"
+                is_error = True
 
             # Add tool result to conversation
             conversation.append(
@@ -82,6 +84,7 @@ async def run_tool_loop(
                     tool_call_id=tool_call.id,
                     content=tool_output,
                     name=tool_call.name,
+                    is_error=is_error,
                 )
             )
 

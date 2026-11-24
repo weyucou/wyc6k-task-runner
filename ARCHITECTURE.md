@@ -182,6 +182,8 @@ SQS → poll_once() → TaskEnvelope.model_validate()
 
 All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered via `register_builtin_tools()`.
 
+A tool reports failure with `ToolResult.from_error(message, output=partial_output)`. The model receives `ToolResult.to_model_content()` — the partial output, then `Error: <message>` — flagged as an error result (Anthropic `is_error`, Gemini `error` key).
+
 ### Tool Profiles
 
 | Profile | Purpose |
