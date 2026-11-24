@@ -79,11 +79,11 @@ async def run_tool_loop(
     2. If the LLM requests tool calls, execute them in order through `registry`.
     3. Append the tool results and repeat until a response has no tool calls.
 
-    An error response fails the run (`llm_error`). A response cut off at `max_tokens` is not
-    final: its tool calls are not run, and the model is asked to reissue them or to continue
-    its text. More than `MAX_CONTINUATIONS` such responses in a row fail the run (`output_limit`).
-    Every call counts toward `max_iterations`. After that many, one final call is made without
-    tools, and the run fails (`step_limit`).
+    An error response fails the run (`llm_error`). A response cut off at `max_tokens` gets
+    another turn: the model is asked to reissue its tool calls, which are skipped, or to
+    continue its text. More than `MAX_CONTINUATIONS` such responses in a row fail the run
+    (`output_limit`). Every call counts toward `max_iterations`. After that many, one final
+    call is made without tools, and the run fails (`step_limit`).
 
     Args:
         client: Provider client; called once per turn through `generate`.
@@ -125,7 +125,7 @@ async def run_tool_loop(
                 text = "".join(parts) + response.content
                 return LoopResult(response, text, conversation, RunOutcome.FAILED, FailureReason.OUTPUT_LIMIT)
 
-            # Not final. Cut-off tool calls are not run: the model reissues them, or continues its text.
+            # Another turn: the model reissues the cut-off tool calls, which are skipped, or continues its text.
             conversation.append(LLMMessage.assistant(response.content, response.tool_calls or None))
             if response.has_tool_calls:
                 conversation.extend(
@@ -185,5 +185,5 @@ async def run_tool_loop(
 
 
 def _llm_error(response: LLMResponse, parts: list[str], history: list[LLMMessage]) -> LoopResult:
-    """Fail the run on an error response. Its message is the failure's detail, not output."""
+    """Fail the run on an error response, with its message as the failure's detail."""
     return LoopResult(response, "".join(parts), history, RunOutcome.FAILED, FailureReason.LLM_ERROR, response.content)

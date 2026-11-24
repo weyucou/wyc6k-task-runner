@@ -28,8 +28,8 @@ entrypoint.py
     2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN env var; returns the LLM api_key
     3. Pull    — ContextBundleService.pull(context_s3_prefix) → CustomerContextBundle
     4. Run     — AgentRunner(agent=envelope.agent_config(api_key)).chat(envelope.task_prompt(), ...)
-    5. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3
-    6. Exit    — 0 (success) | 1 (task failure) | 2 (setup/config failure)
+    5. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3: the answer, or "Outcome: failed (<reason>)" and any partial output
+    6. Exit    — 0 (run succeeded) | 1 (run failed: llm_error, step_limit, output_limit or an exception) | 2 (setup/config failure)
 ```
 
 The one-shot path never polls SQS. `TASK_ENVELOPE_JSON` is injected by the ECS task definition override at launch time (see `wyc6k-infra`).
@@ -45,7 +45,7 @@ get_launcher()  ← COMPUTE_BACKEND
     ├─ docker: docker run --rm -e TASK_ENVELOPE_JSON -e CUSTOMER_ID … <AGENT_WORKER_IMAGE>   (blocks, heartbeats)
     └─ ecs:    ecs.run_task(FARGATE, awsvpc, containerOverrides[agent-worker]: TASK_ENVELOPE_JSON, CUSTOMER_ID)
     ↓
-entrypoint.py in the container (exit 0 | 1 | 2)
+entrypoint.py in the container (exit 0 run succeeded | 1 run failed | 2 setup failure)
     ↓
 LaunchResult.success → delete_message, else leave the message for redelivery
 ```
@@ -54,7 +54,7 @@ The body is forwarded unchanged as `TASK_ENVELOPE_JSON`; it is validated, never 
 
 | Backend | `success` means | On failure |
 |---------|-----------------|------------|
-| `docker` | the container exited `0` | exit `1`/`2` (or a docker error such as `125`) leaves the message: it is redelivered after `VISIBILITY_TIMEOUT`, then dead-lettered by the queue's redrive policy |
+| `docker` | the container exited `0`: the run succeeded | exit `1` (the run failed: `llm_error`, `step_limit`, `output_limit` or an exception), exit `2` (setup failure) or a docker error such as `125` leaves the message: it is redelivered after `VISIBILITY_TIMEOUT`, then dead-lettered by the queue's redrive policy |
 | `ecs` | ECS accepted the task (task ARN, no `failures`) | an API error or `failures` leaves the message. `run_task` is asynchronous, so failures after dispatch surface in ECS task state / CloudWatch, not SQS |
 
 - **Heartbeat**: while a container runs, the docker backend extends the message visibility every `VISIBILITY_TIMEOUT/2` (`consumer.extend_visibility`), so a long task is not launched twice. SQS caps visibility at 12 h after receipt.
@@ -174,7 +174,7 @@ SQS → poll_once() → TaskEnvelope.model_validate_json()
     → AgentRunner(agent=envelope.agent_config(api_key), session_id=str)
     → runner.chat(envelope.task_prompt(), ...)
     → run_tool_loop()  # marvin/loop.py: one client.generate() per turn, tool calls via ToolRegistry
-    → result dict → delete SQS message
+    → result dict → delete SQS message when the run succeeded, else leave it for redelivery (→ DLQ)
 ```
 
 ## MemorySearchTool in stateless mode
@@ -185,7 +185,10 @@ SQS → poll_once() → TaskEnvelope.model_validate_json()
 
 `marvin/runner.py` — builds the system prompt and tool list, then runs the tool-call loop: `run_tool_loop()` in `marvin/loop.py`, shared by every provider client. Clients implement single-call `generate()` only.
 
-- Up to 10 iterations per task
+- Returns a `LoopResult`: `outcome` (`succeeded` | `failed`), `reason` (`llm_error` | `step_limit` | `output_limit`), the output `text` and the history
+- An error response from the provider client fails the run (`llm_error`); its message goes to the log, never to memory
+- Up to 10 iterations per task. At the cap, the loop makes one final call without tools, and the run fails (`step_limit`)
+- A reply cut off at `max_tokens` gets another turn: its tool calls are skipped and the model is asked to reissue them, or it is asked to continue its text. `MAX_CONTINUATIONS` (3) such replies in a row get another turn; the next one fails the run (`output_limit`)
 - Rate limiting between LLM calls
 - Accepts a `context_bundle: ProjectContextBundle` loaded from S3 at worker startup
 

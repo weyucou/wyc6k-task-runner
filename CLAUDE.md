@@ -19,7 +19,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/launchers/consumer.py` | Launcher SQS loop: validate, launch, delete the message only on success; visibility heartbeat |
 | `Dockerfile.launcher` | Launcher image for the `local-runner` compose profile (CI builds only `Dockerfile`) |
 | `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, runs the tool-call loop (`run_tool_loop`) |
-| `marvin/loop.py` | `run_tool_loop()` — the one tool-call loop; calls the provider client's single-call `generate()` each turn |
+| `marvin/loop.py` | `run_tool_loop()` — the one tool-call loop; calls the provider client's single-call `generate()` each turn and returns a `LoopResult` (`RunOutcome`, `FailureReason`) |
 | `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
 | `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
@@ -76,5 +76,5 @@ Full launcher settings: README → Launcher settings.
 - `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
 - Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
-- Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
+- Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in; exit `0` = the run succeeded, `1` = the run failed (`llm_error`/`step_limit`/`output_limit`/exception), `2` = setup failure) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
 - Do not change `TaskEnvelope`'s wire fields here first — weyucou/wyc6k-spec owns the contract (ADR-008); land the spec change, then conform.
