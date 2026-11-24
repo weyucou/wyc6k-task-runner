@@ -280,6 +280,25 @@ class TestMediumTaskFargatePath:
         assert SANDBOX_PR_URL in memory
 
 
+class TestFailedRunPath:
+    """A run that fails exits 1, so the launcher leaves its message for redelivery."""
+
+    def test_llm_api_error_exits_1_and_memory_records_the_outcome(self, monkeypatch, pipeline: Pipeline) -> None:
+        pipeline.llm.script([])  # the stub answers every request with HTTP 500
+        envelope = make_envelope(
+            task_id="task-review-005",
+            action="review",
+            duration_hint_seconds=SHORT_TASK_DURATION_SECONDS,
+            github_token_secret_id=pipeline.github_token_secret_id,
+        )
+
+        assert _run_inline(monkeypatch, json.dumps(envelope)) == 1
+
+        memory = _read_daily_memory(pipeline.s3_context_prefix)
+        assert "## task-review-005\n\nOutcome: failed (llm_error)\n" in memory
+        assert "Error:" not in memory
+
+
 class TestFailedTaskDlqPath:
     """A malformed envelope is retried, then parked on the shared DLQ."""
 

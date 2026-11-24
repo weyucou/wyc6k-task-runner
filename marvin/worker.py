@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from marvin.context import ContextBundleService
 from marvin.credentials import CredentialResolver
 from marvin.llm import LLMMessage
+from marvin.loop import RunOutcome
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
@@ -68,7 +69,7 @@ async def process_envelope(envelope: TaskEnvelope, api_key: str | None) -> dict[
         session_id=envelope.session_id,
     )
     try:
-        response_text, history = await runner.chat(
+        result = await runner.chat(
             envelope.task_prompt(),
             conversation_history=messages,
             system_prompt=context.claude_md or None,  # the customer's CLAUDE.md from S3
@@ -81,8 +82,10 @@ async def process_envelope(envelope: TaskEnvelope, api_key: str | None) -> dict[
         "task_id": envelope.task_id,
         "customer_id": envelope.customer_id,
         "session_id": envelope.session_id,
-        "response": response_text,
-        "history": [m.to_dict() for m in history],
+        "response": result.text,
+        "history": [m.to_dict() for m in result.history],
+        "outcome": result.outcome,
+        "reason": result.reason,
     }
 
 
@@ -131,6 +134,13 @@ def poll_once(sqs: Any) -> None:
             )
 
             result = asyncio.run(process_envelope(envelope, api_key))
+            if result["outcome"] != RunOutcome.SUCCEEDED:
+                logger.error(
+                    "Task task_id=%s failed (%s); message left for redelivery / DLQ",
+                    result["task_id"],
+                    result["reason"],
+                )
+                continue
             logger.info("Completed task_id=%s: %d chars", result["task_id"], len(result["response"]))
             sqs.delete_message(QueueUrl=SQS_QUEUE_URL, ReceiptHandle=receipt_handle)
         except Exception:

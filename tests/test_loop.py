@@ -6,8 +6,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from marvin.llm.base import LLMMessage, LLMResponse, MessageRole
-from marvin.loop import run_tool_loop
+from marvin.llm.base import LLMMessage, MessageRole
+from marvin.loop import (
+    CONTINUE_PROMPT,
+    MAX_CONTINUATIONS,
+    REISSUE_TOOL_CALL,
+    FailureReason,
+    RunOutcome,
+    run_tool_loop,
+)
 from marvin.tools import ToolRegistry
 from marvin.tools.base import BaseTool, ToolResult
 from marvin.tools.builtin import CalculatorTool
@@ -22,6 +29,7 @@ from tests.fake_llm import (
 )
 
 QUESTION = LLMMessage.user("What is 2 + 2?")
+CONTINUE = LLMMessage.user(CONTINUE_PROMPT)
 
 
 class RaisingTool(BaseTool):
@@ -49,6 +57,22 @@ class BadSchemaTool(BaseTool):
         return ToolResult.success("unreachable")
 
 
+class RecordingTool(BaseTool):
+    """Records the arguments of each call it runs."""
+
+    name = "recording"
+    description = "Records its calls."
+    parameters = []
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.calls.append(kwargs)
+        return ToolResult.success("recorded")
+
+
 @pytest.fixture
 def registry() -> ToolRegistry:
     registry = ToolRegistry()
@@ -63,11 +87,11 @@ async def _run_one_call(registry: ToolRegistry, name: str, arguments: dict[str, 
     call = fake_tool_call(name, arguments)
     client = FakeLLMClient([fake_tool_calls(call), fake_text("done")])
 
-    response, history = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+    result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
 
-    assert response.content == "done"
+    assert result.text == "done"
     assert len(client.requests) == 2
-    tool_result = history[-1]
+    tool_result = result.history[-1]
     assert (tool_result.role, tool_result.tool_call_id, tool_result.name) == (MessageRole.TOOL, call.id, name)
     return tool_result
 
@@ -80,14 +104,16 @@ class TestRunToolLoop:
         messages = [QUESTION]
         tools = registry.to_anthropic_tools()
 
-        response, history = await run_tool_loop(client, messages, tools, registry)
+        result = await run_tool_loop(client, messages, tools, registry)
 
-        assert response is answer
+        assert result.response is answer
+        assert (result.outcome, result.reason, result.text) == (RunOutcome.SUCCEEDED, None, "4")
+        assert result.succeeded
         assert len(client.requests) == 1
         assert client.requests[0].messages == [QUESTION]
         assert client.requests[0].tools == tools
-        assert history == [QUESTION]
-        assert history is not messages
+        assert result.history == [QUESTION]
+        assert result.history is not messages
         assert messages == [QUESTION]
 
     @pytest.mark.asyncio
@@ -96,9 +122,9 @@ class TestRunToolLoop:
         client = FakeLLMClient([fake_tool_calls(call, content="Let me check."), fake_text("2 + 2 = 4")])
         messages = [QUESTION]
 
-        response, history = await run_tool_loop(client, messages, registry.to_anthropic_tools(), registry)
+        result = await run_tool_loop(client, messages, registry.to_anthropic_tools(), registry)
 
-        assert response.content == "2 + 2 = 4"
+        assert (result.outcome, result.text) == (RunOutcome.SUCCEEDED, "2 + 2 = 4")
         assert len(client.requests) == 2
         user, assistant, tool_result = client.requests[1].messages
         assert user == QUESTION
@@ -115,7 +141,7 @@ class TestRunToolLoop:
         )
         assert not tool_result.is_error
         # The final answer is not appended to the history; AgentRunner.chat appends it.
-        assert history == [user, assistant, tool_result]
+        assert result.history == [user, assistant, tool_result]
         assert messages == [QUESTION]
 
     @pytest.mark.asyncio
@@ -124,8 +150,9 @@ class TestRunToolLoop:
         second = fake_tool_call("calculator", {"expression": "3 * 3"})
         client = FakeLLMClient([fake_tool_calls(first, second), fake_text("4 and 9")])
 
-        _, history = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
 
+        history = result.history
         assert len(client.requests) == 2
         assert [m.role for m in history] == [
             MessageRole.USER,
@@ -198,7 +225,7 @@ class TestRunToolLoop:
             ]
         )
 
-        response, history = await run_tool_loop(
+        result = await run_tool_loop(
             client,
             [QUESTION],
             tools,
@@ -209,30 +236,169 @@ class TestRunToolLoop:
             max_iterations=2,
         )
 
-        assert response.content == "Stopping here."
+        # The run did not finish: the final call's text is partial output.
+        assert (result.outcome, result.reason, result.text) == (
+            RunOutcome.FAILED,
+            FailureReason.STEP_LIMIT,
+            "Stopping here.",
+        )
         assert [request.tools for request in client.requests] == [tools, tools, None]
         for request in client.requests:
             assert (request.system_prompt, request.temperature, request.max_tokens) == ("Be brief.", 0.2, 256)
-        assert [m.content for m in history if m.role == MessageRole.TOOL] == ["2", "4"]
-        assert client.requests[2].messages == history
+        assert [m.content for m in result.history if m.role == MessageRole.TOOL] == ["2", "4"]
+        assert client.requests[2].messages == result.history
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "scripted",
-        [fake_error("rate limited"), fake_max_tokens("The answer is")],
-        ids=["error", "max_tokens"],
-    )
-    async def test_error_and_max_tokens_stops_are_returned_unchanged(
-        self, registry: ToolRegistry, scripted: LLMResponse
-    ) -> None:
-        client = FakeLLMClient([scripted])
+    async def test_iteration_cap_keeps_the_text_of_a_truncated_turn(self, registry: ToolRegistry) -> None:
+        client = FakeLLMClient([fake_max_tokens("The answer"), fake_text(" is 4.")])
 
-        response, history = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry, max_iterations=1)
 
-        # The loop returns these like a final answer (#84).
-        assert response is scripted
+        assert (result.outcome, result.reason, result.text) == (
+            RunOutcome.FAILED,
+            FailureReason.STEP_LIMIT,
+            "The answer is 4.",
+        )
+        assert client.requests[1].tools is None
+        assert client.requests[1].messages == [QUESTION, LLMMessage.assistant("The answer"), CONTINUE]
+
+    @pytest.mark.asyncio
+    async def test_error_at_the_iteration_cap_is_an_llm_error(self, registry: ToolRegistry) -> None:
+        tools = registry.to_anthropic_tools()
+        client = FakeLLMClient(
+            [fake_tool_calls(fake_tool_call("calculator", {"expression": "2 + 2"})), fake_error("overloaded")]
+        )
+
+        result = await run_tool_loop(client, [QUESTION], tools, registry, max_iterations=1)
+
+        assert (result.outcome, result.reason, result.detail, result.text) == (
+            RunOutcome.FAILED,
+            FailureReason.LLM_ERROR,
+            "Error: overloaded",
+            "",
+        )
+        assert [request.tools for request in client.requests] == [tools, None]
+
+    @pytest.mark.asyncio
+    async def test_llm_error_fails_the_run(self, registry: ToolRegistry) -> None:
+        error = fake_error("rate limited")
+        client = FakeLLMClient([error])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert result.response is error
+        assert (result.outcome, result.reason, result.detail) == (
+            RunOutcome.FAILED,
+            FailureReason.LLM_ERROR,
+            "Error: rate limited",
+        )
+        assert not result.succeeded
+        # The error message is the failure's detail: it is neither output nor a turn in the history.
+        assert result.text == ""
+        assert result.history == [QUESTION]
         assert len(client.requests) == 1
-        assert history == [QUESTION]
+
+    @pytest.mark.asyncio
+    async def test_llm_error_after_a_tool_round(self, registry: ToolRegistry) -> None:
+        call = fake_tool_call("calculator", {"expression": "2 + 2"})
+        client = FakeLLMClient([fake_tool_calls(call), fake_error("overloaded")])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert (result.reason, result.detail) == (FailureReason.LLM_ERROR, "Error: overloaded")
+        assert len(client.requests) == 2
+        # The tool ran before the error.
+        assert [(m.role, m.content) for m in result.history] == [
+            (MessageRole.USER, QUESTION.content),
+            (MessageRole.ASSISTANT, ""),
+            (MessageRole.TOOL, "4"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_llm_error_keeps_the_earlier_partial_text(self, registry: ToolRegistry) -> None:
+        client = FakeLLMClient([fake_max_tokens("The answer"), fake_error("overloaded")])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert (result.reason, result.detail, result.text) == (
+            FailureReason.LLM_ERROR,
+            "Error: overloaded",
+            "The answer",
+        )
+
+    @pytest.mark.asyncio
+    async def test_truncated_tool_calls_are_not_run(self, registry: ToolRegistry) -> None:
+        recorder = RecordingTool()
+        registry.register(recorder)
+        first = fake_tool_call("recording", {"note": "complete"})
+        second = fake_tool_call("recording", {"raw": '{"note": "cut o'})
+        client = FakeLLMClient([fake_max_tokens("Recording.", first, second), fake_text("Done.")])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert recorder.calls == []
+        assert (result.outcome, result.text) == (RunOutcome.SUCCEEDED, "Done.")
+        _, assistant, *tool_results = client.requests[1].messages
+        assert (assistant.role, assistant.content, assistant.tool_calls) == (
+            MessageRole.ASSISTANT,
+            "Recording.",
+            [first, second],
+        )
+        assert [(m.role, m.tool_call_id, m.name, m.content, m.is_error) for m in tool_results] == [
+            (MessageRole.TOOL, first.id, "recording", REISSUE_TOOL_CALL, True),
+            (MessageRole.TOOL, second.id, "recording", REISSUE_TOOL_CALL, True),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_truncated_text_is_continued(self, registry: ToolRegistry) -> None:
+        client = FakeLLMClient([fake_max_tokens("The answer"), fake_max_tokens(" is"), fake_text(" 4.")])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert (result.outcome, result.reason, result.text) == (RunOutcome.SUCCEEDED, None, "The answer is 4.")
+        assert client.requests[2].messages == [
+            QUESTION,
+            LLMMessage.assistant("The answer"),
+            CONTINUE,
+            LLMMessage.assistant(" is"),
+            CONTINUE,
+        ]
+        assert result.history == client.requests[2].messages
+
+    @pytest.mark.asyncio
+    async def test_too_many_truncations_in_a_row_fail_with_output_limit(self, registry: ToolRegistry) -> None:
+        # A truncated tool-call turn counts like a truncated text turn.
+        truncated_call = fake_max_tokens("", fake_tool_call("calculator", {"raw": '{"expression": "2 +'}))
+        parts = [f"part {n}. " for n in range(MAX_CONTINUATIONS)]
+        client = FakeLLMClient([truncated_call, *(fake_max_tokens(part) for part in parts)])
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert (result.outcome, result.reason) == (RunOutcome.FAILED, FailureReason.OUTPUT_LIMIT)
+        assert len(client.requests) == MAX_CONTINUATIONS + 1
+        assert result.text == "".join(parts)
+        # As in every run, the last turn is not in the history.
+        assert result.history == client.requests[-1].messages
+
+    @pytest.mark.asyncio
+    async def test_a_complete_turn_resets_the_truncation_count(self, registry: ToolRegistry) -> None:
+        call = fake_tool_call("calculator", {"expression": "2 + 2"})
+        parts = [f"part {n}. " for n in range(MAX_CONTINUATIONS)]
+        client = FakeLLMClient(
+            [
+                fake_max_tokens("Let me "),
+                fake_tool_calls(call),
+                *(fake_max_tokens(part) for part in parts),
+                fake_text("Done."),
+            ]
+        )
+
+        result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+        assert (result.outcome, result.reason) == (RunOutcome.SUCCEEDED, None)
+        assert len(client.requests) == MAX_CONTINUATIONS + 3
+        # Text from before the tool turn is not part of the answer.
+        assert result.text == "".join(parts) + "Done."
 
     @pytest.mark.asyncio
     async def test_extra_generate_call_fails_loudly(self, registry: ToolRegistry) -> None:

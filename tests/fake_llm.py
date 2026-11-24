@@ -79,6 +79,6 @@ def fake_error(message: str) -> LLMResponse:
     return LLMResponse(content=f"Error: {message}", stop_reason=StopReason.ERROR)
 
 
-def fake_max_tokens(content: str) -> LLMResponse:
-    """A response cut off at the `max_tokens` limit."""
-    return LLMResponse(content=content, stop_reason=StopReason.MAX_TOKENS)
+def fake_max_tokens(content: str, *calls: ToolCall) -> LLMResponse:
+    """A response cut off at the `max_tokens` limit, with any tool calls it had started."""
+    return LLMResponse(content=content, stop_reason=StopReason.MAX_TOKENS, tool_calls=list(calls))
