@@ -323,3 +323,11 @@ class TestTaskEnvelopeTaskPrompt:
         assert extended.startswith(base)
         assert extended.endswith("Keep the diff small.")
         assert "Additional instructions" not in base
+
+
+class TestTaskEnvelopeBedrock:
+    def test_bedrock_provider_validates(self) -> None:
+        agent = {**AGENT, "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5"}
+        envelope = TaskEnvelope.model_validate(_envelope_dict(agent=agent))
+        assert envelope.agent.provider == LLMProvider.BEDROCK
+        assert envelope.agent.model_name == "anthropic.claude-sonnet-5-5"
