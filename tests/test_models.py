@@ -324,6 +324,7 @@ class TestTaskEnvelopeTaskPrompt:
         assert extended.endswith("Keep the diff small.")
         assert "Additional instructions" not in base
 
+
 class TestTaskEnvelopeBedrock:
     def test_bedrock_provider_validates(self) -> None:
         agent = {**AGENT, "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5"}

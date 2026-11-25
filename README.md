@@ -208,11 +208,15 @@ One-shot test run, with LocalStack and the customer context from [step 4](#setup
 export S3_ENDPOINT_URL=http://localhost:4566 AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_DEFAULT_REGION=us-east-1
 export BEDROCK_AWS_PROFILE=your-bedrock-profile BEDROCK_AWS_REGION=us-west-2
 export TASK_ENVELOPE_JSON='{
+  "schema_version": 1,
   "task_id": "bedrock-001",
   "customer_id": "cust-001",
-  "session_id": "local",
-  "agent": {"name": "bedrock-agent", "provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5", "tool_profile": "minimal"},
-  "s3_context_prefix": "s3://local-context/customers/cust-001/projects/demo",
+  "task_source_id": 1,
+  "repository": "example-org/demo",
+  "issue_url": "https://github.com/example-org/demo/issues/1",
+  "action": "review",
+  "agent": {"provider": "bedrock", "model_name": "anthropic.claude-sonnet-5-5", "tool_profile": "minimal"},
+  "context_s3_prefix": "s3://local-context/customers/cust-001/projects/demo/",
   "user_message": "Reply with one short sentence.",
   "enable_tools": false
 }'
