@@ -9,7 +9,8 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # Cancel superseded PR builds. Queue main pushes, so a push is never cut off midway.
+  # Cancel superseded PR builds. Main pushes queue, so a running push is never cut off;
+  # the queue holds one pending run, so a burst of merges skips the middle ones.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
