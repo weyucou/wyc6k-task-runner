@@ -5,13 +5,13 @@ import asyncio
 import datetime as dt
 import http.client
 import logging
-import urllib.request
 from typing import Any
 
 import httpx
 
 from marvin.settings import ZAATAR_SEARCH_API_URL
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult
+from marvin.tools.urls import safe_urlopen
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +170,7 @@ class BrowserTool(BaseTool):
         try:
             content = await asyncio.to_thread(self._fetch, url)
         except (OSError, ValueError, http.client.HTTPException) as exc:
-            # OSError covers URLError, HTTPError and timeouts; ValueError an unsupported or malformed URL.
+            # OSError covers URLError, HTTPError and timeouts; ValueError a blocked, unsupported or malformed URL.
             return ToolResult.from_error(f"Failed to fetch URL: {exc}")
         return ToolResult.success(
             output=content,
@@ -178,7 +178,7 @@ class BrowserTool(BaseTool):
         )
 
     def _fetch(self, url: str) -> str:
-        with urllib.request.urlopen(url, timeout=10) as response:  # noqa: S310
+        with safe_urlopen(url, timeout=10) as response:
             return response.read().decode("utf-8", errors="replace")
 
 
