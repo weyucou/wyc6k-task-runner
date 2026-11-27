@@ -11,9 +11,10 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
+from marvin.tools.urls import safe_urlopen
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -552,7 +553,7 @@ class WebFetchTool(BaseTool):
 
     def _fetch(self, url: str, timeout: int) -> str:
         req = Request(url, headers={"User-Agent": "marvin-manager/1.0"})  # noqa: S310
-        with urlopen(req, timeout=timeout) as response:  # noqa: S310
+        with safe_urlopen(req, timeout=timeout) as response:
             raw = response.read()
             charset = response.headers.get_content_charset() or "utf-8"
             text = raw.decode(charset, errors="replace")
@@ -562,6 +563,8 @@ class WebFetchTool(BaseTool):
         text = re.sub(r"<[^>]+>", "", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
+
+
 
 
 class GitHubIssueTool(BaseTool):
