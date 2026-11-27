@@ -114,7 +114,7 @@ aws ecr describe-images --repository-name weyucou/agent-worker --region ${AWS_RE
 
 Automated build + push (GHA workflow):
 
-The workflow at `.github/workflows/build-image.yml` performs the same five steps on push to `main` using the OIDC IAM role configured via repository variables `AWS_REGION` and `ECR_PUSH_ROLE_ARN`. Until those repo variables are set the workflow will fail at step 3 (`configure-aws-credentials`) — until then, use the manual procedure above.
+The workflow at `.github/workflows/build-image.yml` performs the same five steps on push to `main` using the OIDC IAM role configured via repository variables `AWS_REGION` and `ECR_PUSH_ROLE_ARN`. Until those repo variables are set the workflow will fail at step 3 (`configure-aws-credentials`) — until then, use the manual procedure above. On a pull request it runs only step 1, the build, with no push and no AWS credentials.
 
 ## End-to-end pipeline tests
 
