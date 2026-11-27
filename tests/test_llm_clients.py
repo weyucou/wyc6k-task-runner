@@ -95,7 +95,7 @@ class TestAnthropicClient:
         registry = ToolRegistry()
         registry.register(CalculatorTool())
 
-        response, _ = await run_tool_loop(
+        result = await run_tool_loop(
             client,
             MESSAGES,
             registry.to_anthropic_tools(),
@@ -104,7 +104,7 @@ class TestAnthropicClient:
             max_iterations=1,
         )
 
-        assert response.stop_reason == StopReason.END_TURN
+        assert result.response.stop_reason == StopReason.END_TURN
         assert create.await_count == 2
         for call in create.call_args_list:
             assert not SAMPLING_PARAMS & call.kwargs.keys()

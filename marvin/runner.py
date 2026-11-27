@@ -5,9 +5,9 @@ import logging
 from typing import Any
 
 from marvin.context import CustomerContextBundle
-from marvin.llm import LLMMessage, LLMResponse
+from marvin.llm import LLMMessage, StopReason
 from marvin.llm.factory import create_client_from_agent_config
-from marvin.loop import BeforeToolCall, run_tool_loop
+from marvin.loop import BeforeToolCall, FailureReason, LoopResult, RunOutcome, run_tool_loop
 from marvin.models import AgentConfig, ToolProfile
 from marvin.rate_limiter import rate_limiter_registry
 from marvin.tools import ToolRegistry
@@ -146,7 +146,7 @@ class AgentRunner:
         enable_tools: bool = True,
         tool_names: list[str] | None = None,
         max_tool_iterations: int = 10,
-    ) -> tuple[LLMResponse, list[LLMMessage]]:
+    ) -> LoopResult:
         """Run a conversation with the agent.
 
         Only the agent's allowed tools are sent to the model, and `ToolPolicy` rejects calls to
@@ -160,7 +160,7 @@ class AgentRunner:
             max_tool_iterations: Maximum tool calling iterations.
 
         Returns:
-            Tuple of (final response, updated message history).
+            The run's outcome, output and message history.
         """
         await self._check_rate_limit()
 
@@ -183,7 +183,7 @@ class AgentRunner:
             provider = self.agent.provider if self.agent else "openai"
             profile = self.agent.tool_profile if self.agent else ToolProfile.FULL
             policy = ToolPolicy(self.registry, allowed, profile=profile, before_tool_call=self.before_tool_call)
-            response, history = await run_tool_loop(
+            return await run_tool_loop(
                 client,
                 messages,
                 self.get_tools_for_provider(provider, allowed),
@@ -194,16 +194,15 @@ class AgentRunner:
                 max_iterations=max_tool_iterations,
                 before_tool_call=policy,
             )
-        else:
-            response = await client.generate(
-                messages,
-                system_prompt=prompt,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            history = messages
-
-        return response, history
+        response = await client.generate(
+            messages,
+            system_prompt=prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if response.stop_reason == StopReason.ERROR:
+            return LoopResult(response, "", messages, RunOutcome.FAILED, FailureReason.LLM_ERROR, response.content)
+        return LoopResult(response, response.content, messages, RunOutcome.SUCCEEDED)
 
     async def chat(
         self,
@@ -212,7 +211,7 @@ class AgentRunner:
         conversation_history: list[LLMMessage] | None = None,
         system_prompt: str | None = None,
         enable_tools: bool = True,
-    ) -> tuple[str, list[LLMMessage]]:
+    ) -> LoopResult:
         """Simple chat interface.
 
         Args:
@@ -222,17 +221,19 @@ class AgentRunner:
             enable_tools: Whether to enable tools.
 
         Returns:
-            Tuple of (assistant response text, updated history).
+            The run's outcome and output. Its history ends with the last turn, unless that turn is an error response.
         """
         messages = list(conversation_history or [])
         messages.append(LLMMessage.user(user_message))
 
-        response, history = await self.run(
+        result = await self.run(
             messages,
             system_prompt=system_prompt,
             enable_tools=enable_tools,
         )
 
-        history.append(LLMMessage.assistant(response.content, response.tool_calls if response.has_tool_calls else None))
+        response = result.response
+        if response.stop_reason != StopReason.ERROR:
+            result.history.append(LLMMessage.assistant(response.content, response.tool_calls or None))
 
-        return response.content, history
+        return result

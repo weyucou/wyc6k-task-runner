@@ -13,7 +13,10 @@ import pytest
 from moto import mock_aws
 
 from marvin import worker
+from marvin.llm.base import LLMMessage
+from marvin.loop import FailureReason, LoopResult, RunOutcome
 from marvin.models import TaskEnvelope
+from tests.fake_llm import fake_error, fake_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -100,7 +103,7 @@ class TestPollOnce:
     def test_resolved_key_passed_to_process_envelope_and_message_deleted(self, sqs_queue, caplog) -> None:
         sqs, queue_url = sqs_queue
         sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(_make_envelope_dict()))
-        result = {"task_id": "task-001", "response": "reply"}
+        result = {"task_id": "task-001", "response": "reply", "outcome": "succeeded", "reason": None}
         with (
             patch("marvin.worker.CredentialResolver.resolve", return_value="sk-resolved"),
             patch("marvin.worker.process_envelope", new=AsyncMock(return_value=result)) as mock_process,
@@ -117,6 +120,23 @@ class TestPollOnce:
         )["Attributes"]
         assert attributes == {"ApproximateNumberOfMessages": "0", "ApproximateNumberOfMessagesNotVisible": "0"}
 
+    def test_failed_run_leaves_the_message(self, sqs_queue, caplog) -> None:
+        sqs, queue_url = sqs_queue
+        sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(_make_envelope_dict()))
+        result = {"task_id": "task-001", "response": "", "outcome": "failed", "reason": "llm_error"}
+        with (
+            patch("marvin.worker.CredentialResolver.resolve", return_value=None),
+            patch("marvin.worker.process_envelope", new=AsyncMock(return_value=result)),
+            caplog.at_level(logging.INFO, logger="marvin.worker"),
+        ):
+            worker.poll_once(sqs)
+        [failed] = [record for record in caplog.records if record.levelno == logging.ERROR]
+        assert failed.getMessage() == "Task task_id=task-001 failed (llm_error); message left for redelivery / DLQ"
+        attributes = sqs.get_queue_attributes(
+            QueueUrl=queue_url, AttributeNames=["ApproximateNumberOfMessagesNotVisible"]
+        )["Attributes"]
+        assert attributes["ApproximateNumberOfMessagesNotVisible"] == "1"  # not deleted: redelivered, then DLQ
+
 
 class TestProcessEnvelope:
     def test_runner_gets_agent_config_and_task_prompt(self) -> None:
@@ -125,11 +145,28 @@ class TestProcessEnvelope:
             patch("marvin.worker.ContextBundleService") as mock_svc_cls,
             patch("marvin.worker.AgentRunner") as mock_runner_cls,
         ):
-            mock_runner_cls.return_value.chat = AsyncMock(return_value=("reply", []))
+            mock_runner_cls.return_value.chat = AsyncMock(
+                return_value=LoopResult(fake_text("reply"), "reply", [], RunOutcome.SUCCEEDED)
+            )
             asyncio.run(worker.process_envelope(envelope, "sk-resolved"))
         mock_svc_cls.return_value.pull.assert_called_once_with("s3://bucket/customers/cust-001/projects/billing-api/")
         assert mock_runner_cls.call_args.kwargs["agent"] == envelope.agent_config("sk-resolved")
         assert mock_runner_cls.return_value.chat.call_args.args[0] == envelope.task_prompt()
+
+    def test_result_reports_the_run_outcome(self) -> None:
+        envelope = TaskEnvelope.model_validate(_make_envelope_dict())
+        task = LLMMessage.user("Do the task.")
+        failed = LoopResult(
+            fake_error("overloaded"), "", [task], RunOutcome.FAILED, FailureReason.LLM_ERROR, "Error: overloaded"
+        )
+        with (
+            patch("marvin.worker.ContextBundleService"),
+            patch("marvin.worker.AgentRunner") as mock_runner_cls,
+        ):
+            mock_runner_cls.return_value.chat = AsyncMock(return_value=failed)
+            result = asyncio.run(worker.process_envelope(envelope, None))
+        assert (result["response"], result["outcome"], result["reason"]) == ("", "failed", "llm_error")
+        assert result["history"] == [task.to_dict()]
 
     def test_background_processes_stopped_when_the_run_raises(self) -> None:
         envelope = TaskEnvelope.model_validate(_make_envelope_dict())

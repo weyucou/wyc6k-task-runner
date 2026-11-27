@@ -6,8 +6,8 @@ Resolves credentials, pulls S3 context, runs the agent, writes a memory
 summary, then exits.
 
 Exit codes:
-    0 — task completed successfully
-    1 — task failure (agent error during run)
+    0 — the run succeeded
+    1 — the run did not succeed: a failed outcome (llm_error, step_limit, output_limit) or a raised exception
     2 — setup/config failure (parse, credential, or context pull error)
 """
 
@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from marvin.context import ContextBundleService, CustomerContextBundle, MemoryEntry
 from marvin.credentials import CredentialResolver
 from marvin.llm import LLMMessage
+from marvin.loop import LoopResult, RunOutcome
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
@@ -65,7 +66,7 @@ def configure_logging() -> None:
     )
 
 
-async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle: CustomerContextBundle) -> str:
+async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle: CustomerContextBundle) -> LoopResult:
     messages: list[LLMMessage] = []
     for msg in envelope.conversation_history:
         role = msg.get("role", "user")
@@ -83,14 +84,23 @@ async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle
         context_bundle=context_bundle,
     )
     try:
-        response_text, _ = await runner.chat(
+        return await runner.chat(
             envelope.task_prompt(),
             conversation_history=messages,
             enable_tools=envelope.enable_tools,
         )
     finally:
         stop_background_processes()
-    return response_text
+
+
+def _memory_content(task_id: str, result: LoopResult) -> str:
+    """The memory entry for a run: its answer, or its outcome and any partial output."""
+    if result.succeeded:
+        return f"## {task_id}\n\n{result.text}\n"
+    content = f"## {task_id}\n\nOutcome: {result.outcome} ({result.reason})\n"
+    if result.text:
+        content += f"\nPartial output:\n\n{result.text}\n"
+    return content
 
 
 def main() -> int:
@@ -149,28 +159,47 @@ def main() -> int:
     # Step 4: Run agent
     log.info("Running agent", step="run-agent", status="start")
     try:
-        response_text = asyncio.run(_run_agent(envelope, api_key, context_bundle))
+        result = asyncio.run(_run_agent(envelope, api_key, context_bundle))
     except Exception as exc:
-        log.error("Agent run failed", step="run-agent", status="failed", error=str(exc))
+        log.error(
+            "Agent run failed",
+            step="run-agent",
+            status="failed",
+            outcome=RunOutcome.FAILED,
+            reason="exception",
+            error=str(exc),
+        )
         return 1
-    log.info("Agent run complete", step="run-agent", status="ok", response_length=len(response_text))
+    if result.succeeded:
+        log.info("Agent run complete", step="run-agent", status="ok", response_length=len(result.text))
+    else:
+        log.error(
+            "Agent run failed",
+            step="run-agent",
+            status="failed",
+            outcome=result.outcome,
+            reason=result.reason,
+            detail=result.detail,
+        )
 
-    # Step 5: Write memory summary
+    # Step 5: Write memory summary, for a failed run too
     log.info("Writing memory entry", step="write-memory", status="start")
     try:
         today = dt.datetime.now(tz=dt.UTC).date()
         memory_entry = MemoryEntry(
             date=today,
             filename=f"{today.isoformat()}.md",
-            content=f"## {envelope.task_id}\n\n{response_text}\n",
+            content=_memory_content(envelope.task_id, result),
         )
         context_service.push_memory(envelope.context_s3_prefix, memory_entry)
         log.info("Memory entry written", step="write-memory", status="ok")
     except Exception as exc:
         log.warning("Failed to write memory entry", step="write-memory", status="failed", error=str(exc))
 
-    log.info("Task complete", step="exit", exit_code=0)
-    return 0
+    exit_code = 0 if result.succeeded else 1
+    log_exit = log.info if result.succeeded else log.error
+    log_exit("Task complete", step="exit", exit_code=exit_code, outcome=result.outcome, reason=result.reason)
+    return exit_code
 
 
 if __name__ == "__main__":

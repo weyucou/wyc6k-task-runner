@@ -10,6 +10,7 @@ import pytest
 
 from marvin.context import CustomerContextBundle
 from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, StopReason, ToolCall
+from marvin.loop import FailureReason, RunOutcome
 from marvin.models import AgentConfig, LLMProvider, ToolProfile
 from marvin.runner import AgentRunner, _build_context_prefix
 from marvin.tools import ToolRegistry
@@ -19,6 +20,7 @@ from tests.fake_llm import (
     FakeLLMClient,
     FakeRequest,
     RecordingTool,
+    fake_error,
     fake_text,
     fake_tool_call,
     fake_tool_calls,
@@ -134,9 +136,27 @@ class TestAgentRunnerChat:
         runner = AgentRunner(agent=agent, register_builtins=False)
         self._patch_client(runner, "Hello from agent!")
 
-        text, history = asyncio.run(runner.chat("Hi", enable_tools=False))
-        assert text == "Hello from agent!"
-        assert len(history) >= 1
+        result = asyncio.run(runner.chat("Hi", enable_tools=False))
+        assert (result.outcome, result.text) == (RunOutcome.SUCCEEDED, "Hello from agent!")
+        # The last turn is appended to the history.
+        assert result.history == [LLMMessage.user("Hi"), LLMMessage.assistant("Hello from agent!")]
+
+    def test_chat_leaves_an_error_response_out_of_the_history(self) -> None:
+        agent = _make_agent()
+        runner = AgentRunner(agent=agent, register_builtins=False)
+        client = FakeLLMClient([fake_error("invalid x-api-key")])
+        runner._client = client
+
+        result = asyncio.run(runner.chat("Hi", enable_tools=False))
+
+        # A run without tools goes through the tool loop too.
+        assert (result.outcome, result.reason, result.detail) == (
+            RunOutcome.FAILED,
+            FailureReason.LLM_ERROR,
+            "Error: invalid x-api-key",
+        )
+        assert client.requests[0].tools is None
+        assert result.history == [LLMMessage.user("Hi")]
 
     def test_chat_appends_user_message(self) -> None:
         agent = _make_agent()
@@ -189,15 +209,17 @@ class TestAgentRunnerToolLoop:
         )
         runner._client = client
 
-        response, history = asyncio.run(
-            runner.run([LLMMessage.user("What is 2 + 2?")], enable_tools=True, max_tool_iterations=1)
-        )
+        result = asyncio.run(runner.run([LLMMessage.user("What is 2 + 2?")], enable_tools=True, max_tool_iterations=1))
 
-        assert response.content == "2 + 2 = 4"
-        assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL]
-        assert history[-1].content == "4"  # CalculatorTool ran through runner.registry
-        tools = runner.registry.to_anthropic_tools()
         # max_tool_iterations=1 makes the second call the capped final call, which has no tools.
+        assert (result.outcome, result.reason, result.text) == (
+            RunOutcome.FAILED,
+            FailureReason.STEP_LIMIT,
+            "2 + 2 = 4",
+        )
+        assert [m.role for m in result.history] == [MessageRole.USER, MessageRole.ASSISTANT, MessageRole.TOOL]
+        assert result.history[-1].content == "4"  # CalculatorTool ran through runner.registry
+        tools = runner.registry.to_anthropic_tools()
         assert [(r.system_prompt, r.tools, r.temperature, r.max_tokens) for r in client.requests] == [
             ("You are helpful.", tools, 0.2, 512),
             ("You are helpful.", None, 0.2, 512),
@@ -210,8 +232,8 @@ def _run_turns(
     """Run one user message through `runner` against scripted `responses`; return the client and the history."""
     client = FakeLLMClient(list(responses))
     runner._client = client
-    _, history = asyncio.run(runner.run([LLMMessage.user("Go.")], **run_kwargs))
-    return client, history
+    result = asyncio.run(runner.run([LLMMessage.user("Go.")], **run_kwargs))
+    return client, result.history
 
 
 def _sent_tool_names(request: FakeRequest) -> set[str]:

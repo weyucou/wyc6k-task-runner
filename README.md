@@ -28,7 +28,7 @@ python -m marvin
 
 ## Local Docker run
 
-Runs real tasks in the production agent-worker image and `entrypoint.py`, launched with `TASK_ENVELOPE_JSON` exactly as ECS does. The launcher (`python -m marvin.launchers`) polls SQS and runs `docker run --rm -e TASK_ENVELOPE_JSON ... weyucou/agent-worker:local` per envelope, the local equivalent of `ecs:RunTask`. It deletes the SQS message only when the container exits `0`; exit `1`/`2` leaves it for redelivery (or the DLQ).
+Runs real tasks in the production agent-worker image and `entrypoint.py`, launched with `TASK_ENVELOPE_JSON` exactly as ECS does. The launcher (`python -m marvin.launchers`) polls SQS and runs `docker run --rm -e TASK_ENVELOPE_JSON ... weyucou/agent-worker:local` per envelope, the local equivalent of `ecs:RunTask`. It deletes the SQS message only when the container exits `0`, which `entrypoint.py` does only when the run succeeded. Exit `1` (the run failed: `llm_error`, `step_limit`, `output_limit` or an exception) or `2` (setup failure) leaves it for redelivery (or the DLQ).
 
 ### Setup and run on Ubuntu Linux
 
