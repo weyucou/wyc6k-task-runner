@@ -8,17 +8,20 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
-from collections import deque
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 from urllib.request import Request, urlopen
 
+from marvin.settings import TOOL_OUTPUT_MAX_BYTES, TOOL_OUTPUT_MAX_LINES
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult, ToolStatus
+from marvin.tools.truncate import OutputCapture, cap_head, measure, read_body
 
 if TYPE_CHECKING:
+    import io
     from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
@@ -29,11 +32,83 @@ except ImportError:
     async_playwright = None  # type: ignore[assignment]
 
 
+_READ_MAX_LINE_CHARS = 2000  # a longer line is cut, with a marker giving its length
+_READ_CHUNK_CHARS = 64 * 1024  # how much `read` takes at a time when it skips or counts
+
+
+def _read_notice(first: int, last: int, total: int) -> str:
+    return f"[Showing lines {first}-{last} of {total}. Use offset={last + 1} to continue.]"
+
+
+# The room the read notice takes after the last line: a blank line, then the notice with numbers up to sys.maxsize.
+_READ_NOTICE_LINES, _READ_NOTICE_BYTES = measure("\n" + _read_notice(sys.maxsize, sys.maxsize, sys.maxsize))
+
+
+def _read_line(f: TextIO) -> str:
+    """The next line of `f` ("" at the end), cut to _READ_MAX_LINE_CHARS; the rest of a longer line is skipped."""
+    line = f.readline(_READ_MAX_LINE_CHARS + 1)
+    if len(line) <= _READ_MAX_LINE_CHARS or line.endswith("\n"):
+        return line
+    length = len(line)
+    while rest := f.readline(_READ_CHUNK_CHARS):
+        length += len(rest)
+        if rest.endswith("\n"):
+            return f"{line[:_READ_MAX_LINE_CHARS]}… [line truncated, {length - 1} chars]\n"
+    return f"{line[:_READ_MAX_LINE_CHARS]}… [line truncated, {length} chars]"
+
+
+def _count_lines_left(f: TextIO) -> int:
+    count, last = 0, "\n"
+    while chunk := f.read(_READ_CHUNK_CHARS):
+        count += chunk.count("\n")
+        last = chunk[-1]
+    return count if last == "\n" else count + 1
+
+
+def _read_lines(f: TextIO, path: str, start: int, limit: int) -> ToolResult:
+    """Lines `start` on of `f`, `limit` of them when positive, within the output cap and its notice."""
+    stop = start + limit if limit > 0 else None  # the first line not asked for
+    max_lines = TOOL_OUTPUT_MAX_LINES - _READ_NOTICE_LINES
+    max_bytes = TOOL_OUTPUT_MAX_BYTES - _READ_NOTICE_BYTES
+    shown: list[str] = []
+    size = number = 0
+    more = False  # lines remain after the shown ones
+    while line := _read_line(f):
+        number += 1
+        if number < start:
+            continue
+        line_bytes = len(line.encode())
+        if number == stop or (shown and (len(shown) == max_lines or size + line_bytes > max_bytes)):
+            more = True
+            break
+        shown.append(line)
+        size += line_bytes
+    total = number + _count_lines_left(f) if more else number
+    last = start + len(shown) - 1
+    output = "".join(shown)
+    if more:  # every shown line ends with a newline: only the file's last line may lack one
+        output += "\n" + _read_notice(start, last, total)
+    return ToolResult.success(
+        output=output,
+        data={
+            "path": path,
+            "lines_read": len(shown),
+            "total_lines": total,
+            "next_offset": last + 1 if more else None,
+            "truncated": more and number != stop,  # the cap, not `limit`, ended the read
+        },
+    )
+
+
 class ReadTool(BaseTool):
     """Read the contents of a file."""
 
     name = "read"
-    description = "Read the contents of a file at the given path. Returns the file content as text."
+    description = (
+        "Read the contents of a file at the given path. Returns the file content as text: at most "
+        f"{TOOL_OUTPUT_MAX_LINES} lines or {TOOL_OUTPUT_MAX_BYTES} bytes per call, with lines over "
+        f"{_READ_MAX_LINE_CHARS} characters cut. When lines remain, the result ends with the offset to continue from."
+    )
     parameters = [
         ToolParameter(
             name="path",
@@ -51,27 +126,17 @@ class ReadTool(BaseTool):
         ToolParameter(
             name="limit",
             type="number",
-            description="Maximum number of lines to read. Defaults to all lines.",
+            description="Maximum number of lines to read. Defaults to all lines, up to the output cap.",
             required=False,
             default=0,
         ),
     ]
 
     async def execute(self, path: str, offset: int = 1, limit: int = 0) -> ToolResult:
-        """Read file contents."""
+        """Read file lines, a line at a time, so memory stays bounded whatever the file size."""
         try:
             with Path(path).expanduser().open(encoding="utf-8", errors="replace") as f:
-                lines = f.readlines()
-
-            start = max(0, offset - 1)
-            end = start + limit if limit > 0 else len(lines)
-            selected = lines[start:end]
-
-            content = "".join(selected)
-            return ToolResult.success(
-                output=content,
-                data={"path": path, "lines_read": len(selected), "total_lines": len(lines)},
-            )
+                return _read_lines(f, path, max(1, int(offset)), int(limit))
         except FileNotFoundError:
             return ToolResult.from_error(f"File not found: {path}")
         except PermissionError:
@@ -256,10 +321,10 @@ async def _terminate_process_group(proc: asyncio.subprocess.Process) -> None:
     await _poll_until(lambda: proc.returncode is not None, _KILL_GRACE_SECONDS)
 
 
-async def _read_into(stream: asyncio.StreamReader, sink: bytearray) -> None:
+async def _read_into(stream: asyncio.StreamReader, sink: OutputCapture) -> None:
     """Copy `stream` into `sink` until EOF; what was read survives cancellation."""
     while chunk := await stream.read(_READ_CHUNK_BYTES):
-        sink.extend(chunk)
+        sink.write(chunk)
 
 
 class ExecTool(BaseTool):
@@ -272,7 +337,9 @@ class ExecTool(BaseTool):
         "Prefer this over specialised wrappers when a CLI already exists for the task. "
         "Commands run with stdin closed and are terminated on timeout; "
         "start servers and other background jobs with the `process` tool. "
-        "Increase timeout for long-running tools (e.g. askcc spawns a Claude session and may take hours)."
+        "Increase timeout for long-running tools (e.g. askcc spawns a Claude session and may take hours). "
+        "stdout and stderr come back as one stream. Output over the output cap keeps its last lines, "
+        "and the full output is saved to a file named in the result."
     )
     require_approval = True
     parameters = [
@@ -308,66 +375,69 @@ class ExecTool(BaseTool):
                 command,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,  # one ordered stream: one tail to show, one spill file
                 cwd=work_dir,
                 start_new_session=True,  # the shell leads a new process group, so killpg reaches its children
             )
         except OSError as exc:
             return ToolResult.from_error(f"Error executing command: {exc}")
 
-        assert proc.stdout is not None  # both pipes exist: stdout and stderr are PIPE
-        assert proc.stderr is not None
-        stdout, stderr = bytearray(), bytearray()
-        readers = [
-            asyncio.create_task(_read_into(proc.stdout, stdout)),
-            asyncio.create_task(_read_into(proc.stderr, stderr)),
-        ]
-        pipes_held = False
-        try:
-            # Watch the shell itself: Process.wait() also waits for background children that inherited the pipes.
-            exited = await _poll_until(lambda: proc.returncode is not None, timeout)
-            if exited:
-                _, pending = await asyncio.wait(readers, timeout=_PIPE_DRAIN_SECONDS)
-                pipes_held = bool(pending)
-            if pipes_held or not exited:
+        assert proc.stdout is not None  # stdout is PIPE
+        with OutputCapture("exec") as capture:  # bounded memory, however much the command prints
+            reader = asyncio.create_task(_read_into(proc.stdout, capture))
+            pipes_held = False
+            try:
+                # Watch the shell itself: Process.wait() also waits for background children that inherited the pipe.
+                exited = await _poll_until(lambda: proc.returncode is not None, timeout)
+                if exited:
+                    _, pending = await asyncio.wait([reader], timeout=_PIPE_DRAIN_SECONDS)
+                    pipes_held = bool(pending)
+                if pipes_held or not exited:
+                    await _terminate_process_group(proc)
+                    await asyncio.wait([reader], timeout=_PIPE_DRAIN_SECONDS)
+            except asyncio.CancelledError:
                 await _terminate_process_group(proc)
-                await asyncio.wait(readers, timeout=_PIPE_DRAIN_SECONDS)
-        except asyncio.CancelledError:
-            await _terminate_process_group(proc)
-            raise
-        finally:
-            for reader in readers:
+                raise
+            finally:
                 reader.cancel()
 
-        out = stdout.decode(errors="replace")
-        err = stderr.decode(errors="replace")
-        output = out + (f"\n[stderr]\n{err}" if err else "")
-        if not exited:
-            message = (
-                f"Command timed out after {timeout}s and was terminated. "
-                "Rerun with a larger timeout (seconds) if it needs more time."
-            )
-            return ToolResult.from_error(message, output=output)
-        if pipes_held:
-            output += (
-                "\n[Background processes started by the command kept its output open and were terminated. "
-                "Use the `process` tool for long-running jobs.]"
-            )
-        data = {"return_code": proc.returncode, "stdout": out, "stderr": err}
-        if proc.returncode == 0:
-            return ToolResult.success(output=output, data=data)
-        return ToolResult(
-            status=ToolStatus.ERROR,
-            output=output,
-            error=f"Command exited with code {proc.returncode}.",
-            data=data,
-        )
+            # to_model_content() appends a failed call's error after a blank line. The rendered output leaves room
+            # for it, so the cap never cuts the notice that ends the output.
+            if not exited:
+                message = (
+                    f"Command timed out after {timeout}s and was terminated. "
+                    "Rerun with a larger timeout (seconds) if it needs more time."
+                )
+                return ToolResult.from_error(message, output=capture.render(reserve=f"\n\nError: {message}"))
+            note = ""
+            if pipes_held:
+                note = (
+                    "\n[Background processes started by the command kept its output open and were terminated. "
+                    "Use the `process` tool for long-running jobs.]"
+                )
+            error = f"Command exited with code {proc.returncode}." if proc.returncode else None
+            output = capture.render(reserve=note + (f"\n\nError: {error}" if error else "")) + note
+            data = {
+                "return_code": proc.returncode,
+                "truncated": capture.truncated,
+                "spill_path": str(capture.path) if capture.path else None,
+            }
+            if error is None:
+                return ToolResult.success(output=output, data=data)
+            return ToolResult(status=ToolStatus.ERROR, output=output, error=error, data=data)
 
 
-# Background process registry: session_id -> {"proc": Popen, "buf": output lines not yet read, "thread": reader}
+# Background process registry: session_id -> {"proc": Popen, "capture": output not yet read, "thread": reader}
 _BACKGROUND_PROCESSES: dict[str, dict[str, Any]] = {}
 _BACKGROUND_LOCK = threading.Lock()
-_PROCESS_BUFFER_MAX_LINES = 2000  # per session; older unread lines are dropped
+
+
+def _drain(stream: io.BufferedReader, entry: dict[str, Any]) -> None:
+    """Copy a session's output into its current capture until EOF, each chunk as soon as it arrives."""
+    with stream:  # closed at EOF, so a long-lived worker does not leak one pipe per session
+        while chunk := stream.read1(_READ_CHUNK_BYTES):
+            with _BACKGROUND_LOCK:
+                entry["capture"].write(chunk)
 
 
 def _terminate_process_groups(procs: list[subprocess.Popen]) -> None:
@@ -387,9 +457,11 @@ def _terminate_process_groups(procs: list[subprocess.Popen]) -> None:
 def stop_background_processes() -> None:
     """Terminate every `process` session; call when an agent run ends."""
     with _BACKGROUND_LOCK:
-        procs = [entry["proc"] for entry in _BACKGROUND_PROCESSES.values()]
+        entries = list(_BACKGROUND_PROCESSES.values())
         _BACKGROUND_PROCESSES.clear()
-    _terminate_process_groups(procs)
+        for entry in entries:
+            entry["capture"].close()  # under the lock: no reader writes, or creates a spill file, after this
+    _terminate_process_groups([entry["proc"] for entry in entries])
 
 
 class ProcessTool(BaseTool):
@@ -399,7 +471,8 @@ class ProcessTool(BaseTool):
     description = (
         "Manage long-running background processes. "
         "Actions: start (launch a background command), status (check if running), "
-        f"output (read the lines printed since the last output call; up to {_PROCESS_BUFFER_MAX_LINES} are kept), "
+        "output (read what the command printed since the last output call, stdout and stderr as one stream; "
+        "over the output cap, its last lines, with the full output saved to a file named in the result), "
         "stop (terminate), list (list all sessions). Sessions are stopped when the run ends."
     )
     require_approval = True
@@ -469,21 +542,13 @@ class ProcessTool(BaseTool):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=work_dir,
-                    text=True,
                     start_new_session=True,  # its own process group, so stop reaches the shell's children
                 )
-                buf: deque[str] = deque(maxlen=_PROCESS_BUFFER_MAX_LINES)
-
-                def _reader(stream: IO[str], b: deque[str]) -> None:
-                    with stream:  # closed at EOF, so a long-lived worker does not leak one pipe per session
-                        for line in stream:  # line by line, so `output` sees lines as they arrive
-                            with _BACKGROUND_LOCK:
-                                b.append(line)
-
-                t = threading.Thread(target=_reader, args=(proc.stdout, buf), daemon=True)
-                t.start()
+                session: dict[str, Any] = {"proc": proc, "capture": OutputCapture(f"process-{session_id}")}
+                session["thread"] = threading.Thread(target=_drain, args=(proc.stdout, session), daemon=True)
+                session["thread"].start()
                 with _BACKGROUND_LOCK:
-                    _BACKGROUND_PROCESSES[session_id] = {"proc": proc, "buf": buf, "thread": t}
+                    _BACKGROUND_PROCESSES[session_id] = session
                 return ToolResult.success(
                     output=f"Started session '{session_id}' (pid {proc.pid}).",
                     data={"session_id": session_id, "pid": proc.pid},
@@ -497,7 +562,6 @@ class ProcessTool(BaseTool):
             return ToolResult.from_error(f"Session '{session_id}' not found.")
 
         proc = entry["proc"]
-        buf = entry["buf"]
 
         if action == "status":
             running = proc.poll() is None
@@ -507,17 +571,25 @@ class ProcessTool(BaseTool):
             )
 
         if action == "output":
-            with _BACKGROUND_LOCK:
-                lines = list(buf)
-                buf.clear()
+            with _BACKGROUND_LOCK:  # the next read window starts now
+                capture = entry["capture"]
+                entry["capture"] = OutputCapture(f"process-{session_id}")
+            with capture:
+                output = capture.render()
             return ToolResult.success(
-                output="".join(lines),
-                data={"session_id": session_id, "lines": len(lines)},
+                output=output,
+                data={
+                    "session_id": session_id,
+                    "lines": capture.total_lines,
+                    "truncated": capture.truncated,
+                    "spill_path": str(capture.path) if capture.path else None,
+                },
             )
 
         if action == "stop":
             with _BACKGROUND_LOCK:
                 _BACKGROUND_PROCESSES.pop(session_id, None)
+                entry["capture"].close()  # unread output is dropped
             await asyncio.to_thread(_terminate_process_groups, [proc])
             return ToolResult.success(
                 output=f"Session '{session_id}' terminated.",
@@ -552,18 +624,19 @@ class WebFetchTool(BaseTool):
         """Fetch URL content."""
         try:
             loop = asyncio.get_event_loop()
-            content = await loop.run_in_executor(None, self._fetch, url, timeout)
+            content, note = await loop.run_in_executor(None, self._fetch, url, timeout)
             return ToolResult.success(
-                output=content,
+                output=cap_head(content, name=self.name, reserve=note) + note,
                 data={"url": url, "length": len(content)},
             )
         except Exception as exc:  # noqa: BLE001
             return ToolResult.from_error(f"Failed to fetch {url}: {exc}")
 
-    def _fetch(self, url: str, timeout: int) -> str:
+    def _fetch(self, url: str, timeout: int) -> tuple[str, str]:
+        """The page as plain text, and the note `read_body` gives when the body is over its bound."""
         req = Request(url, headers={"User-Agent": "marvin-manager/1.0"})  # noqa: S310
         with urlopen(req, timeout=timeout) as response:  # noqa: S310
-            raw = response.read()
+            raw, note = read_body(response)
             charset = response.headers.get_content_charset() or "utf-8"
             text = raw.decode(charset, errors="replace")
         # Strip HTML tags for readability
@@ -571,7 +644,7 @@ class WebFetchTool(BaseTool):
         text = re.sub(r"<script[^>]*>.*?</script>", "", text, flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"<[^>]+>", "", text)
         text = re.sub(r"\n{3,}", "\n\n", text)
-        return text.strip()
+        return text.strip(), note
 
 
 class RealWebSearchTool(BaseTool):
@@ -976,7 +1049,7 @@ class BrowserAutomationTool(BaseTool):
                     plain = re.sub(r"\n{3,}", "\n\n", plain).strip()
                     await browser.close()
                     return ToolResult.success(
-                        output=plain[:10000],
+                        output=cap_head(plain, name=self.name),
                         data={"length": len(plain)},
                     )
 

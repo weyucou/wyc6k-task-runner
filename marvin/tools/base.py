@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from marvin.settings import TOOL_OUTPUT_MAX_BYTES, TOOL_OUTPUT_MAX_LINES
+from marvin.tools.truncate import cap_head, fits
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,11 +49,23 @@ class ToolResult:
         return self.status == ToolStatus.ERROR
 
     def to_model_content(self) -> str:
-        """The text the model sees: the output, then the error message when the call failed."""
+        """The text the model sees: the output, then the error message when the call failed.
+
+        The text is capped (`marvin/tools/truncate.py`). Over the cap, the error of a failed call keeps up to half
+        of it and the output is cut to the room left, so the cap never cuts off the error.
+        """
         if not self.is_error:
-            return self.output
+            return cap_head(self.output)
         error = f"Error: {self.error or 'Tool failed'}"
-        return f"{self.output}\n\n{error}" if self.output else error
+        if not self.output:
+            return cap_head(error, name="error")
+        content = f"{self.output}\n\n{error}"
+        if fits(content):
+            return content
+        suffix = "\n\n" + cap_head(
+            error, name="error", max_lines=TOOL_OUTPUT_MAX_LINES // 2, max_bytes=TOOL_OUTPUT_MAX_BYTES // 2
+        )
+        return cap_head(self.output, reserve=suffix) + suffix
 
     @classmethod
     def success(cls, output: str, data: dict[str, Any] | None = None) -> ToolResult:
