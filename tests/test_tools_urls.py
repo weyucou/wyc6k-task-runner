@@ -8,7 +8,6 @@ import threading
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.request import Request
 
 import pytest
@@ -16,7 +15,7 @@ import pytest
 from marvin.tools import urls
 from marvin.tools.base import ToolStatus
 from marvin.tools.builtin import BrowserTool
-from marvin.tools.coding import BrowserAutomationTool, ImageTool, WebFetchTool
+from marvin.tools.coding import WebFetchTool
 from marvin.tools.urls import UnsafeURLError, check_url, safe_urlopen
 
 if TYPE_CHECKING:
@@ -140,27 +139,4 @@ class TestToolsRefuseBlockedUrls:
         assert result.status == ToolStatus.ERROR
         assert "Only http and https URLs" in (result.error or "")
 
-    def test_image(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
-        result = asyncio.run(ImageTool().execute(source="http://localhost:9/cat.png"))
-
-        assert result.status == ToolStatus.ERROR
-        assert "Blocked URL" in (result.error or "")
-
-    def test_browser_does_not_navigate(self) -> None:
-        page = AsyncMock()
-        browser = AsyncMock()
-        browser.new_page.return_value = page
-        playwright = MagicMock()
-        playwright.chromium.launch = AsyncMock(return_value=browser)
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=playwright)
-        session.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("marvin.tools.coding.async_playwright", return_value=session):
-            result = asyncio.run(BrowserAutomationTool().execute(action="content", url=IMDS_URL))
-
-        assert result.status == ToolStatus.ERROR
-        assert "Blocked URL" in (result.error or "")
-        page.goto.assert_not_awaited()

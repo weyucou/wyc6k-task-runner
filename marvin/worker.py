@@ -63,15 +63,16 @@ async def process_envelope(envelope: TaskEnvelope, api_key: str | None) -> dict[
         else:
             messages.append(LLMMessage.user(content))
 
+    # The system prompt is the context bundle followed by agent.system_prompt, as in entrypoint.py.
     runner = AgentRunner(
         agent=envelope.agent_config(api_key),
         session_id=envelope.session_id,
+        context_bundle=context,
     )
     try:
         response_text, history = await runner.chat(
             envelope.task_prompt(),
             conversation_history=messages,
-            system_prompt=context.claude_md or None,  # the customer's CLAUDE.md from S3
             enable_tools=envelope.enable_tools,
         )
     finally:

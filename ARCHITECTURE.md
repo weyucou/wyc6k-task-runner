@@ -169,9 +169,9 @@ contract; it must never move into `marvin/`.
 
 ```
 SQS → poll_once() → TaskEnvelope.model_validate_json()
-    → CredentialResolver.resolve(envelope)  # GITHUB_TOKEN env var; returns the LLM api_key
-    → ContextBundleService.pull(context_s3_prefix)  # fetch CLAUDE.md, SOPs, memories
-    → AgentRunner(agent=envelope.agent_config(api_key), session_id=str)
+    → CredentialResolver.resolve(envelope)  # GITHUB_TOKEN env var; returns the LLM api_key (Anthropic agents only)
+    → ContextBundleService.pull(context_s3_prefix)  # CLAUDE.md, SOPs, README.md, MEMORY.md, newest memory files
+    → AgentRunner(agent=envelope.agent_config(api_key), session_id=str, context_bundle=CustomerContextBundle)
     → runner.chat(envelope.task_prompt(), ...)
     → run_tool_loop()  # marvin/loop.py: one client.generate() per turn; ToolPolicy checks each tool call, ToolRegistry runs it
     → result dict → delete SQS message
@@ -188,7 +188,7 @@ SQS → poll_once() → TaskEnvelope.model_validate_json()
 - Up to 10 iterations per task
 - Sends only the agent's allowed tools; `ToolPolicy` rejects calls to any other ([Tool System → Enforcement](#enforcement))
 - Rate limiting between LLM calls
-- Accepts a `context_bundle: ProjectContextBundle` loaded from S3 at worker startup
+- System prompt: the task's `context_bundle` (`CustomerContextBundle`, pulled from S3 per task), then `agent.system_prompt`. The bundle part holds CLAUDE.md, the SOPs and the project goals, then `MEMORY.md` and the newest memory entries. `pull()` reads at most `MEMORY_RECENT_ENTRIES` (default 7) memory files, and `MEMORY.md` plus the entries are capped at `MEMORY_CONTEXT_MAX_CHARS` (default 20 000) characters. `worker.py` and `entrypoint.py` both pass the bundle, so both paths send the same prompt.
 
 ## Tool System
 
@@ -201,7 +201,7 @@ A tool reports failure with `ToolResult.from_error(message, output=partial_outpu
 | Profile | Tools |
 |---------|-------|
 | `MINIMAL` | None: LLM response only |
-| `CODING` | File I/O, shell, web fetch/search, sub-agent sessions, image analysis, memory, GitHub issues and PRs, `askcc_run`. Not `browser`, `calculator` or `get_datetime` |
+| `CODING` | File I/O, shell, web fetch/search, memory, GitHub issues and PRs. Not `browser`, `calculator` or `get_datetime` |
 | `MESSAGING` | None: it matches name prefixes (`send`, `slack`, …) that no registered tool has |
 | `FULL` | All registered tools (the default) |
 
@@ -222,21 +222,25 @@ AgentRunner.run()
 
 - `before_tool_call` (`marvin/loop.py`) is the only hook point. A rejected call never reaches the registry; the model receives the reason as the tool result.
 - Runs are unattended, so `require_approval` tools that are allowed run and are logged. `tools_deny` is the gate.
-- `web_fetch`, `browser_fetch` and `image` open URLs through `safe_urlopen` (`marvin/tools/urls.py`): http(s) only, and no loopback, link-local (IMDS, ECS task metadata), unspecified or `fd00:ec2::254` address, checked again on each redirect. `browser` runs `check_url` before navigating.
+- `web_fetch` and `browser_fetch` open URLs through `safe_urlopen` (`marvin/tools/urls.py`): http(s) only, and no loopback, link-local (IMDS, ECS task metadata), unspecified or `fd00:ec2::254` address, checked again on each redirect.
 
-What is not enforced (root `exec` with the full environment, paths, DNS rebinding, browser redirects): [README → Tool enforcement](README.md#tool-enforcement).
+What is not enforced (root `exec` with the full environment, paths, DNS rebinding): [README → Tool enforcement](README.md#tool-enforcement).
 
-### Key Coding Tools
+### Coding Tools
+
+Core tools (date/time, calculator, web search, page fetch, memory) are listed in [README → Available Tools](README.md#available-tools).
 
 | Tool | `require_approval` | Description |
 |------|-------------------|-------------|
 | `ReadTool` | No | Read file contents |
 | `WriteTool` | Yes | Write/overwrite a file |
 | `EditTool` | Yes | Targeted string replacement |
+| `ApplyPatchTool` | Yes | Apply a unified diff via the `patch` CLI |
 | `ExecTool` | Yes | Run shell commands (includes `gh` CLI) |
-| `SessionsSpawnTool` | Yes | Spawn a Claude CLI sub-agent |
-| `SessionsSendTool` | Yes | Send prompt to a sub-agent |
-| `BrowserTool` | Yes | Browser automation via Playwright |
+| `ProcessTool` | Yes | Manage long-running background shell sessions |
+| `WebFetchTool` | No | Fetch URL content as plain text |
+| `GitHubIssueTool` | No | Issue actions via `gh` |
+| `GitHubPRTool` | No | Pull request actions via `gh` |
 
 ## LLM Clients
 

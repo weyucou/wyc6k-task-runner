@@ -186,14 +186,18 @@ Install commands for Ubuntu: [Setup and run on Ubuntu Linux](#setup-and-run-on-u
 
 ## Available Tools
 
-All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered via `register_builtin_tools()`.
+All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered via `register_builtin_tools()`. `REGISTERED_TOOLS` in `tests/test_tools.py` pins the registered names: update it and these tables together.
 
 ### Core Tools (`marvin/tools/builtin.py`)
 
 | Tool | Name | Description |
 |------|------|-------------|
 | `DateTimeTool` | `get_datetime` | Current date/time in any timezone |
-| `CalculatorTool` | `calculator` | Safe arithmetic expression evaluator |
+| `CalculatorTool` | `calculator` | Arithmetic (`+ - * / // % **`) parsed with `ast`; input length, exponents and result size are capped |
+| `WebSearchTool` | `web_search` | Web search via [zaatar-search-api](https://github.com/monkut/zaatar-search-api) (`ZAATAR_SEARCH_API_URL`) |
+| `BrowserTool` | `browser_fetch` | Fetch a web page's raw content |
+| `MemoryStoreTool` | `memory_store` | Store a value under a key for the rest of the run |
+| `MemoryRetrieveTool` | `memory_retrieve` | Read a value `memory_store` stored in the same run |
 | `MemorySearchTool` | `memory_search` | Returns empty in stateless mode |
 
 ### Coding Tools (`marvin/tools/coding.py`)
@@ -203,15 +207,12 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 | `ReadTool` | `read` | No | Read file contents with optional line range |
 | `WriteTool` | `write` | Yes | Write/overwrite a file |
 | `EditTool` | `edit` | Yes | Targeted unique-string replacement in a file |
-| `ApplyPatchTool` | `apply_patch` | Yes | Apply a unified diff patch via the `patch` CLI |
+| `ApplyPatchTool` | `apply_patch` | Yes | Apply a unified diff via the `patch` CLI (`patch -p1` in the working directory) |
 | `ExecTool` | `exec` | Yes | Run shell commands (includes `gh` CLI for GitHub) |
 | `ProcessTool` | `process` | Yes | Manage long-running background shell sessions |
 | `WebFetchTool` | `web_fetch` | No | Fetch URL content as plain text |
-| `RealWebSearchTool` | `web_search` | No | Search via Brave Search API |
-| `SessionsSpawnTool` | `sessions_spawn` | Yes | Spawn a Claude CLI sub-agent session |
-| `SessionsSendTool` | `sessions_send` | Yes | Send a prompt to a Claude CLI sub-agent |
-| `ImageTool` | `image` | No | Analyze images via Claude vision |
-| `BrowserTool` | `browser` | Yes | Browser automation via Playwright |
+| `GitHubIssueTool` | `github_issue` | No | View, comment on, label or close an issue via `gh` |
+| `GitHubPRTool` | `github_pr` | No | Create, view or update a pull request via `gh` |
 
 ### Tool Profiles
 
@@ -220,7 +221,7 @@ An agent's allowed tools are its `tool_profile`'s tools, plus `tools_allow`, min
 | Profile | Tools |
 |---------|-------|
 | `minimal` | None |
-| `coding` | `apply_patch`, `askcc_run`, `browser_fetch`, `edit`, `exec`, `github_issue`, `github_pr`, `image`, `memory_retrieve`, `memory_search`, `memory_store`, `process`, `read`, `sessions_send`, `sessions_spawn`, `web_fetch`, `web_search`, `write` |
+| `coding` | `apply_patch`, `browser_fetch`, `edit`, `exec`, `github_issue`, `github_pr`, `memory_retrieve`, `memory_search`, `memory_store`, `process`, `read`, `web_fetch`, `web_search`, `write` |
 | `messaging` | None. It matches names starting with `send`, `message`, `notify`, `email`, `slack` or `telegram`; no registered tool has one |
 | `full` (default) | All registered tools |
 
@@ -232,14 +233,13 @@ An agent's allowed tools are its `tool_profile`'s tools, plus `tools_allow`, min
 - **Tool calls**: `ToolPolicy` (`marvin/tools/policy.py`), the `before_tool_call` hook of `run_tool_loop()`, rejects a call to any other tool. The tool does not run; the model receives `Error: Tool '<name>' is not available to this agent (profile: <profile>). Available tools: <names>.`
 - **Caller hook**: `AgentRunner(before_tool_call=...)` runs next, for allowed calls only. A returned string rejects the call; the model receives `Error: <reason>`.
 - **`require_approval`**: every run is unattended, so nobody can approve a call. An allowed tool marked `require_approval` runs, and each call is logged: `auto-approved <name> (unattended run)`. To keep an agent from using such a tool, list it in `tools_deny`.
-- **URLs**: `web_fetch`, `browser_fetch` and `image` (http(s) sources) open URLs through `safe_urlopen` (`marvin/tools/urls.py`). It accepts `http` and `https` only, and refuses a host that resolves to a loopback, link-local (`169.254.0.0/16`, which holds EC2 IMDS and ECS task metadata; `fe80::/10`) or unspecified address, or to `fd00:ec2::254` (IMDS over IPv6). It checks each redirect target the same way. `browser` checks its `url` before navigating. Private (RFC 1918) addresses are allowed.
+- **URLs**: `web_fetch` and `browser_fetch` open URLs through `safe_urlopen` (`marvin/tools/urls.py`). It accepts `http` and `https` only, and refuses a host that resolves to a loopback, link-local (`169.254.0.0/16`, which holds EC2 IMDS and ECS task metadata; `fe80::/10`) or unspecified address, or to `fd00:ec2::254` (IMDS over IPv6). It checks each redirect target the same way. Private (RFC 1918) addresses are allowed.
 
 Not enforced:
 
-- `exec` and `process` run any command as root (the agent-worker image sets no `USER`), with the worker's full environment, including `GITHUB_TOKEN` and AWS credentials. They reach any address, metadata endpoints included. The CLIs that `sessions_spawn` and `askcc_run` start run the same way.
-- No path restriction: file tools read and write, and `image` reads, any path the process can.
+- `exec` and `process` run any command as root (the agent-worker image sets no `USER`), with the worker's full environment, including `GITHUB_TOKEN` and AWS credentials. They reach any address, metadata endpoints included.
+- No path restriction: file tools read and write any path the process can.
 - DNS rebinding: the URL check resolves the host, then the HTTP client resolves it again to connect.
-- `browser`: Chromium follows redirects and loads subresources without the check.
 - Tool output is not redacted.
 
 ### Required Environment Variables
@@ -249,14 +249,26 @@ Not enforced:
 | `SQS_QUEUE_URL` | worker | SQS queue URL to poll for tasks |
 | `SQS_WAIT_TIME_SECONDS` | worker | Long-poll wait per receive call (default `20`) |
 | `ZAATAR_SEARCH_API_URL` | `web_search` | Base URL of a deployed [zaatar-search-api](https://github.com/monkut/zaatar-search-api) instance (e.g. `http://localhost:5000`) |
-| `ANTHROPIC_API_KEY` | `image` | Anthropic API key for vision analysis |
+| `GITHUB_TOKEN` | `github_issue`, `github_pr` | Used when the envelope has no `github_token_secret_id` |
+| `ANTHROPIC_API_KEY` | `anthropic` provider | Used when the envelope has no `anthropic_api_key_secret_id`; ignored for other providers, which keep `agent.api_key` |
+| `MEMORY_RECENT_ENTRIES` | context | Newest memory files read from S3 per task (default `7`) |
+| `MEMORY_CONTEXT_MAX_CHARS` | context | Character budget for `MEMORY.md` plus the recent memory entries in the system prompt (default `20000`) |
 
-### Optional Runtime Dependencies
+### Runtime CLIs
 
-| Dependency | Required By | Install |
-|------------|-------------|---------|
-| `playwright` + Chromium | `browser` | `pip install playwright && playwright install chromium` |
-| `claude` CLI | `sessions_spawn`, `sessions_send` | Install from [Claude Code](https://claude.ai/code) |
+The agent-worker image (`Dockerfile`) installs the CLIs the tools shell out to:
+
+| CLI | Used by |
+|-----|---------|
+| `patch` | `apply_patch` |
+| `gh` | `github_issue`, `github_pr` |
+| `git` | `exec` (repository operations) |
+
+Smoke check after building the image:
+
+```bash
+docker run --rm --entrypoint sh weyucou/agent-worker:local -c 'patch --version && gh --version && git --version'
+```
 
 ## Development
 

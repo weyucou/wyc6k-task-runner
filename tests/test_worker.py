@@ -2,6 +2,7 @@
 """Tests for marvin.worker — the in-process SQS worker loop."""
 
 import asyncio
+import datetime as dt
 import json
 import logging
 import signal
@@ -12,11 +13,14 @@ import boto3
 import pytest
 from moto import mock_aws
 
+import entrypoint
 from marvin import worker
+from marvin.context import CustomerContextBundle, MemoryEntry
 from marvin.models import TaskEnvelope
+from tests.fake_llm import FakeLLMClient, fake_text
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Coroutine, Iterator
 
 LEAK_MARKER = "sk-ant-LEAKMARKER"
 # agent.api_key is rejected at parse. It ends the JSON, where pydantic's truncated input_value would show it.
@@ -142,6 +146,44 @@ class TestProcessEnvelope:
             with pytest.raises(RuntimeError, match="LLM timeout"):
                 asyncio.run(worker.process_envelope(envelope, None))
         mock_stop.assert_called_once_with()
+
+
+def _context_bundle() -> CustomerContextBundle:
+    return CustomerContextBundle(
+        customer_id="cust-001",
+        claude_md="Customer rules.",
+        sops={"deploy.md": "Deploy SOP."},
+        project_goals="Project goals.",
+        memory_index="Memory index.",
+        daily_memories=[MemoryEntry(date=dt.date(2026, 11, 12), filename="2026-11-12.md", content="Previous run.")],
+    )
+
+
+def _system_prompt_sent(run: Coroutine[Any, Any, Any]) -> str | None:
+    """Run `run` against a scripted model and return the system prompt of its one request."""
+    client = FakeLLMClient([fake_text("done")])
+    with patch("marvin.runner.create_client_from_agent_config", return_value=client):
+        asyncio.run(run)
+    [request] = client.requests
+    return request.system_prompt
+
+
+class TestProcessEnvelopeSystemPrompt:
+    def test_includes_the_context_bundle(self) -> None:
+        envelope = TaskEnvelope.model_validate(_make_envelope_dict())
+        with patch("marvin.worker.ContextBundleService") as service_cls:
+            service_cls.return_value.pull.return_value = _context_bundle()
+            prompt = _system_prompt_sent(worker.process_envelope(envelope, None))
+        assert prompt is not None
+        for text in ("Customer rules.", "Deploy SOP.", "Project goals.", "Memory index.", "Previous run."):
+            assert text in prompt
+
+    def test_matches_the_entrypoint_system_prompt(self) -> None:
+        envelope, bundle = TaskEnvelope.model_validate(_make_envelope_dict()), _context_bundle()
+        with patch("marvin.worker.ContextBundleService") as service_cls:
+            service_cls.return_value.pull.return_value = bundle
+            worker_prompt = _system_prompt_sent(worker.process_envelope(envelope, None))
+        assert worker_prompt == _system_prompt_sent(entrypoint._run_agent(envelope, None, bundle))
 
 
 class TestMain:

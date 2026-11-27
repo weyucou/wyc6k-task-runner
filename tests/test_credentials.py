@@ -8,7 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from marvin.credentials import CredentialResolver, _fetch_secret
-from marvin.models import TaskEnvelope
+from marvin.models import LLMProvider, TaskEnvelope
+
+NON_ANTHROPIC_PROVIDERS = [provider for provider in LLMProvider if provider != LLMProvider.ANTHROPIC]
 
 
 def _make_envelope(**kwargs) -> TaskEnvelope:
@@ -89,6 +91,22 @@ class TestCredentialResolver:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "env-ant-key")
         envelope = _make_envelope()  # no secret ID fields
         assert CredentialResolver().resolve(envelope) == "env-ant-key"
+
+    @pytest.mark.parametrize("provider", NON_ANTHROPIC_PROVIDERS)
+    def test_env_anthropic_key_not_returned_for_other_providers(self, monkeypatch, provider) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "env-ant-key")
+        envelope = _make_envelope(agent={"provider": provider, "model_name": "some-model", "tool_profile": "coding"})
+        assert CredentialResolver().resolve(envelope) is None
+
+    @pytest.mark.parametrize("provider", NON_ANTHROPIC_PROVIDERS)
+    def test_anthropic_key_secret_not_fetched_for_other_providers(self, provider) -> None:
+        envelope = _make_envelope(
+            agent={"provider": provider, "model_name": "some-model", "tool_profile": "coding"},
+            anthropic_api_key_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:ak",
+        )
+        with patch("marvin.credentials.get_secrets_manager_client") as client_factory:
+            assert CredentialResolver().resolve(envelope) is None
+        client_factory.assert_not_called()
 
     def test_raises_before_processing_on_secret_fetch_failure(self) -> None:
         envelope = _make_envelope(github_token_secret_id="arn:aws:secretsmanager:ap-northeast-1:123:secret:bad")

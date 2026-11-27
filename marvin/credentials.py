@@ -6,7 +6,7 @@ import logging
 import os
 
 from marvin.awsclients import get_secrets_manager_client
-from marvin.models import TaskEnvelope
+from marvin.models import LLMProvider, TaskEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ class CredentialResolver:
         """Resolve the task's credentials and return the Anthropic API key for the LLM client.
 
         - github_token_secret_id -> sets os.environ["GITHUB_TOKEN"] for tool use
-        - anthropic_api_key_secret_id -> the returned key, for TaskEnvelope.agent_config()
+        - anthropic_api_key_secret_id -> the returned key, for TaskEnvelope.agent_config(),
+          only when agent.provider is anthropic; other providers get None and keep their own key source
 
         Falls back to GITHUB_TOKEN / ANTHROPIC_API_KEY env vars when secret IDs are absent, and returns
         None when neither source has an Anthropic key.
@@ -67,4 +68,6 @@ class CredentialResolver:
         if github_token:
             os.environ["GITHUB_TOKEN"] = github_token
 
+        if envelope.agent.provider != LLMProvider.ANTHROPIC:
+            return None
         return _resolve_credential(envelope.anthropic_api_key_secret_id, "ANTHROPIC_API_KEY", "Anthropic API key")
