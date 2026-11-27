@@ -20,6 +20,7 @@ from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
+from marvin.tools.truncate import cleanup_spill_dir
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ async def process_envelope(envelope: TaskEnvelope, api_key: str | None) -> dict[
         )
     finally:
         stop_background_processes()  # the worker is long-lived: sessions must not outlive their task
+        cleanup_spill_dir()  # nor spill files; after the sessions, whose reader threads write into it
 
     return {
         "task_id": envelope.task_id,

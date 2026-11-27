@@ -11,6 +11,7 @@ import httpx
 
 from marvin.settings import ZAATAR_SEARCH_API_URL
 from marvin.tools.base import BaseTool, ToolParameter, ToolResult
+from marvin.tools.truncate import cap_head, read_body
 from marvin.tools.urls import safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -168,18 +169,20 @@ class BrowserTool(BaseTool):
     async def execute(self, url: str) -> ToolResult:
         """Fetch content from a URL."""
         try:
-            content = await asyncio.to_thread(self._fetch, url)
+            content, note = await asyncio.to_thread(self._fetch, url)
         except (OSError, ValueError, http.client.HTTPException) as exc:
             # OSError covers URLError, HTTPError and timeouts; ValueError a blocked, unsupported or malformed URL.
             return ToolResult.from_error(f"Failed to fetch URL: {exc}")
         return ToolResult.success(
-            output=content,
+            output=cap_head(content, name=self.name, reserve=note) + note,
             data={"url": url, "length": len(content)},
         )
 
-    def _fetch(self, url: str) -> str:
+    def _fetch(self, url: str) -> tuple[str, str]:
+        """The page text, and the note `read_body` gives when the body is over its bound."""
         with safe_urlopen(url, timeout=10) as response:
-            return response.read().decode("utf-8", errors="replace")
+            body, note = read_body(response)
+        return body.decode("utf-8", errors="replace"), note
 
 
 class MemoryStoreTool(BaseTool):

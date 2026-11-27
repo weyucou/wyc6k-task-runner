@@ -10,6 +10,7 @@ import os
 import tempfile
 import threading
 import time
+import tracemalloc
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +21,8 @@ import anthropic
 import httpx
 import pytest
 
-from marvin.tools import coding
+from marvin.settings import TOOL_OUTPUT_MAX_BYTES, TOOL_OUTPUT_MAX_LINES
+from marvin.tools import coding, truncate
 from marvin.tools.base import ToolResult, ToolStatus
 from marvin.tools.builtin import (
     BrowserTool,
@@ -40,9 +42,12 @@ from marvin.tools.coding import (
     ImageTool,
     ProcessTool,
     ReadTool,
+    WebFetchTool,
     WriteTool,
 )
 from marvin.tools.registry import ToolRegistry
+from marvin.tools.truncate import FETCH_MAX_BYTES, measure
+from tests.notices import HEAD_NOTICE, TAIL_NOTICE
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -329,6 +334,11 @@ class TestToolSchemaGeneration:
 # ---- ToolResult ----
 
 
+def _within_the_cap(content: str) -> bool:
+    lines, size = measure(content)
+    return lines <= TOOL_OUTPUT_MAX_LINES and size <= TOOL_OUTPUT_MAX_BYTES
+
+
 class TestToolResult:
     @pytest.mark.parametrize(
         ("result", "content"),
@@ -346,6 +356,38 @@ class TestToolResult:
     def test_is_error(self) -> None:
         assert ToolResult.from_error("boom").is_error
         assert not ToolResult.success("4").is_error
+
+    def test_an_oversized_result_is_capped(self) -> None:
+        content = ToolResult.success("x\n" * 200_000).to_model_content()
+        assert _within_the_cap(content)
+        assert content.startswith("x\nx\n")
+        assert HEAD_NOTICE.fullmatch(content.rsplit("\n", 1)[1])
+
+    def test_an_oversized_error_result_keeps_its_error_after_the_notice(self) -> None:
+        result = ToolResult.from_error("Command exited with code 1.", output="x\n" * 200_000)
+        content = result.to_model_content()
+        assert _within_the_cap(content)
+        *_, notice, blank, error = content.split("\n")
+        assert HEAD_NOTICE.fullmatch(notice)
+        assert (blank, error) == ("", "Error: Command exited with code 1.")
+
+    def test_an_oversized_error_message_is_capped_too(self) -> None:
+        content = ToolResult.from_error("y\n" * 200_000, output="x\n" * 200_000).to_model_content()
+        assert _within_the_cap(content)
+        output, error = content.split("\n\nError: ")
+        assert HEAD_NOTICE.fullmatch(output.rsplit("\n", 1)[1])
+        assert error.startswith("y\ny\n")
+        assert HEAD_NOTICE.fullmatch(error.rsplit("\n", 1)[1])
+
+    def test_an_oversized_error_without_output_is_capped(self) -> None:
+        content = ToolResult.from_error("y\n" * 200_000).to_model_content()
+        assert _within_the_cap(content)
+        assert content.startswith("Error: y\ny\n")
+
+    def test_a_long_error_is_kept_whole_while_everything_fits(self) -> None:
+        error = "e" * (TOOL_OUTPUT_MAX_BYTES * 3 // 4)  # over half the cap
+        result = ToolResult.from_error(error, output="partial")
+        assert result.to_model_content() == f"partial\n\nError: {error}"
 
 
 # ---- ToolRegistry ----
@@ -682,8 +724,59 @@ class TestFileTools:
         monkeypatch.setenv("HOME", str(tmp_path))
         (tmp_path / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
         result = asyncio.run(ReadTool().execute(path="~/notes.txt", offset=2, limit=1))
-        assert result.output == "two\n"
-        assert result.data == {"path": "~/notes.txt", "lines_read": 1, "total_lines": 3}
+        # A limit inside the cap gets the offset hint only.
+        assert result.output == "two\n\n[Showing lines 2-2 of 3. Use offset=3 to continue.]"
+        assert result.data == {
+            "path": "~/notes.txt",
+            "lines_read": 1,
+            "total_lines": 3,
+            "next_offset": 3,
+            "truncated": False,
+        }
+
+    def test_read_a_small_file_whole(self, tmp_path) -> None:
+        target = tmp_path / "small.txt"
+        target.write_text("one\ntwo", encoding="utf-8")
+        result = asyncio.run(ReadTool().execute(path=str(target)))
+        assert result.output == "one\ntwo"
+        assert (result.data["next_offset"], result.data["truncated"]) == (None, False)
+
+    @pytest.mark.parametrize("line", ["{n}", "{n:0100}"], ids=["over-the-lines", "over-the-bytes"])
+    def test_read_a_big_file_shows_the_head_and_the_offset_to_continue(self, tmp_path, line) -> None:
+        target = tmp_path / "big.txt"
+        target.write_text("".join(line.format(n=n) + "\n" for n in range(1, 100_001)), encoding="utf-8")
+        result = asyncio.run(ReadTool().execute(path=str(target)))
+        assert _within_the_cap(result.output)
+        *lines, blank, notice = result.output.split("\n")
+        last = len(lines)
+        assert lines == [line.format(n=n) for n in range(1, last + 1)]
+        assert blank == ""
+        assert notice == f"[Showing lines 1-{last} of 100000. Use offset={last + 1} to continue.]"
+        assert (result.data["next_offset"], result.data["truncated"]) == (last + 1, True)
+
+        following = asyncio.run(ReadTool().execute(path=str(target), offset=last + 1))
+        assert following.output.startswith(line.format(n=last + 1) + "\n")
+
+    def test_read_cuts_a_long_line(self, tmp_path) -> None:
+        target = tmp_path / "long.txt"
+        target.write_text("a" * 100_000 + "\nshort\n" + "b" * 2001, encoding="utf-8")
+        result = asyncio.run(ReadTool().execute(path=str(target)))
+        assert result.output == (
+            "a" * 2000 + "… [line truncated, 100000 chars]\nshort\n" + "b" * 2000 + "… [line truncated, 2001 chars]"
+        )
+        assert result.data["total_lines"] == 3
+
+    def test_read_keeps_memory_bounded(self, tmp_path) -> None:
+        target = tmp_path / "one-line.txt"
+        target.write_text("a" * (10 * 2**20) + "\nshort\n", encoding="utf-8")
+        tracemalloc.start()
+        try:
+            result = asyncio.run(ReadTool().execute(path=str(target)))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 4 * 2**20  # the file holds 10 MiB
+        assert result.output.endswith(f"… [line truncated, {10 * 2**20} chars]\nshort\n")
 
     def test_read_missing_file_returns_error(self, tmp_path) -> None:
         missing = tmp_path / "missing.txt"
@@ -802,7 +895,7 @@ class TestExecTool:
         )
         assert time.monotonic() - start < 2
         assert result.data.get("return_code") == 0
-        assert result.data["stdout"] == "done\n"
+        assert result.output.startswith("done\n")
         assert "`process` tool" in result.output
         assert not _alive(int((tmp_path / "pid").read_text(encoding="utf-8")))
 
@@ -818,6 +911,55 @@ class TestExecTool:
         assert param.default == 120
         assert "larger" in param.description
         assert inspect.signature(ExecTool.execute).parameters["timeout"].default == 120
+
+    def test_small_output_is_whole_and_creates_no_spill_dir(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        result = asyncio.run(ExecTool().execute(command="echo hi"))
+        assert result.output == "hi\n"
+        assert result.data == {"return_code": 0, "truncated": False, "spill_path": None}
+        assert list(tmp_path.iterdir()) == []
+
+    def test_stderr_is_interleaved_with_stdout(self) -> None:
+        result = asyncio.run(ExecTool().execute(command="echo out; echo err >&2; echo more"))
+        assert result.output == "out\nerr\nmore\n"
+
+    def test_long_output_keeps_the_tail_and_spills_all_of_it(self) -> None:
+        result = asyncio.run(ExecTool().execute(command="seq 1 100000"))
+        assert _within_the_cap(result.to_model_content())
+        *tail, blank, notice = result.output.split("\n")
+        match = TAIL_NOTICE.fullmatch(notice)
+        assert match is not None
+        assert blank == ""
+        assert tail == [str(n) for n in range(100_001 - int(match[1]), 100_001)]
+        assert int(match[2]) == 100_000
+        assert Path(match[5]).read_text(encoding="utf-8") == "".join(f"{n}\n" for n in range(1, 100_001))
+        assert result.data == {"return_code": 0, "truncated": True, "spill_path": match[5]}
+
+    @pytest.mark.parametrize(
+        ("command", "timeout", "error"),
+        [
+            ("seq 1 100000; exit 3", 10, "Command exited with code 3."),
+            ("seq 1 100000; exec sleep 30", 1, "Command timed out after 1s"),
+        ],
+        ids=["non-zero-exit", "timeout"],
+    )
+    def test_a_failed_command_keeps_the_tail_notice_and_the_error(self, command, timeout, error) -> None:
+        content = asyncio.run(ExecTool().execute(command=command, timeout=timeout)).to_model_content()
+        assert _within_the_cap(content)
+        *_, notice, blank, last = content.split("\n")
+        assert TAIL_NOTICE.fullmatch(notice)
+        assert blank == ""
+        assert last.startswith(f"Error: {error}")
+
+    def test_memory_stays_bounded_for_a_flood_of_output(self) -> None:
+        tracemalloc.start()
+        try:
+            result = asyncio.run(ExecTool().execute(command="yes | head -c 50000000"))
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 8 * 2**20  # the command prints 50 MB
+        assert Path(result.data["spill_path"]).stat().st_size == 50_000_000
 
 
 class TestProcessTool:
@@ -853,16 +995,25 @@ class TestProcessTool:
         assert first.output == "one\n"
         assert second.output == ""
 
-    def test_buffer_is_bounded(self, monkeypatch) -> None:
-        monkeypatch.setattr(coding, "_PROCESS_BUFFER_MAX_LINES", 10)
+    def test_output_over_the_cap_keeps_the_tail_and_spills_the_rest(self) -> None:
         tool = ProcessTool()
-        asyncio.run(tool.execute(action="start", session_id="seq", command="seq 1 100"))
+        asyncio.run(tool.execute(action="start", session_id="seq", command="seq 1 100000; echo err >&2"))
         try:
             _BACKGROUND_PROCESSES["seq"]["thread"].join(timeout=5)
-            output = asyncio.run(tool.execute(action="output", session_id="seq")).output
+            first = asyncio.run(tool.execute(action="output", session_id="seq"))
+            second = asyncio.run(tool.execute(action="output", session_id="seq"))
         finally:
             asyncio.run(tool.execute(action="stop", session_id="seq"))
-        assert output.splitlines() == [str(n) for n in range(91, 101)]
+        assert _within_the_cap(first.output)
+        *tail, blank, notice = first.output.split("\n")
+        match = TAIL_NOTICE.fullmatch(notice)
+        assert match is not None
+        assert blank == ""
+        assert tail == [*(str(n) for n in range(100_002 - int(match[1]), 100_001)), "err"]
+        # The lines the tail leaves out stay readable in the spill file.
+        expected = "".join(f"{n}\n" for n in range(1, 100_001)) + "err\n"
+        assert Path(match[5]).read_text(encoding="utf-8") == expected
+        assert second.output == ""
 
     def test_start_rejects_a_session_id_in_use(self) -> None:
         tool = ProcessTool()
@@ -896,22 +1047,91 @@ class TestProcessTool:
         assert not any(_alive(pid) for pid in pids)
 
 
+# ---- WebFetchTool / BrowserTool: bounded fetches ----
+
+
+def _response(body: bytes) -> MagicMock:
+    """A urlopen response that serves `body`."""
+    response = MagicMock()
+    response.__enter__.return_value = response
+    response.read.side_effect = io.BytesIO(body).read
+    response.headers.get_content_charset.return_value = "utf-8"
+    return response
+
+
+FETCH_TOOLS = [
+    pytest.param(WebFetchTool, "marvin.tools.coding.safe_urlopen", id="web_fetch"),
+    pytest.param(BrowserTool, "marvin.tools.builtin.safe_urlopen", id="browser_fetch"),
+]
+
+
+@pytest.mark.parametrize(("tool_cls", "urlopen"), FETCH_TOOLS)
+class TestFetchTools:
+    def test_reads_a_bounded_body(self, tool_cls, urlopen) -> None:
+        response = _response(b"hello")
+        with patch(urlopen, return_value=response):
+            result = asyncio.run(tool_cls().execute(url="http://example.com"))
+        response.read.assert_called_once_with(FETCH_MAX_BYTES + 1)
+        assert result.output == "hello"
+
+    def test_a_long_page_shows_its_head_and_spills_the_text(self, tool_cls, urlopen) -> None:
+        body = "".join(f"{n}\n" for n in range(1, 100_001)).encode()
+        with patch(urlopen, return_value=_response(body)):
+            result = asyncio.run(tool_cls().execute(url="http://example.com"))
+        assert _within_the_cap(result.to_model_content())
+        *head, blank, notice = result.output.split("\n")
+        match = HEAD_NOTICE.fullmatch(notice)
+        assert match is not None
+        assert blank == ""
+        assert head == [str(n) for n in range(1, int(match[1]) + 1)]
+        spilled = Path(match[5]).read_text(encoding="utf-8")
+        assert spilled.startswith("1\n2\n3\n")
+        assert spilled.rstrip("\n").endswith("\n100000")
+
+    def test_a_body_over_the_bound_says_so(self, tool_cls, urlopen, monkeypatch) -> None:
+        monkeypatch.setattr(truncate, "FETCH_MAX_BYTES", 1000)
+        response = _response(b"x" * 5000)
+        with patch(urlopen, return_value=response):
+            result = asyncio.run(tool_cls().execute(url="http://example.com"))
+        response.read.assert_called_once_with(1001)
+        assert result.output == "x" * 1000 + "\n\n[Only the first 1000 bytes of the response body were read.]"
+
+
 # ---- BrowserAutomationTool ----
+
+
+def _playwright(page: AsyncMock) -> MagicMock:
+    """An `async_playwright()` session whose browser opens `page`."""
+    browser = AsyncMock()
+    browser.new_page.return_value = page
+    playwright = MagicMock()
+    playwright.chromium.launch = AsyncMock(return_value=browser)
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=playwright)
+    session.__aexit__ = AsyncMock(return_value=None)
+    return session
 
 
 class TestBrowserAutomationTool:
     def test_screenshot_defaults_to_the_system_temp_dir(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
         page = AsyncMock()
-        browser = AsyncMock()
-        browser.new_page.return_value = page
-        playwright = MagicMock()
-        playwright.chromium.launch = AsyncMock(return_value=browser)
-        session = MagicMock()
-        session.__aenter__ = AsyncMock(return_value=playwright)
-        session.__aexit__ = AsyncMock(return_value=None)
-        with patch("marvin.tools.coding.async_playwright", return_value=session):
+        with patch("marvin.tools.coding.async_playwright", return_value=_playwright(page)):
             result = asyncio.run(BrowserAutomationTool().execute(action="screenshot"))
         expected = str(tmp_path / "screenshot.png")
         page.screenshot.assert_awaited_once_with(path=expected, full_page=True)
         assert result.data == {"path": expected}
+
+    def test_content_is_capped_with_a_spill_file(self) -> None:
+        page = AsyncMock()
+        page.content.return_value = "".join(f"<p>{n}</p>\n" for n in range(1, 100_001))
+        with patch("marvin.tools.coding.async_playwright", return_value=_playwright(page)):
+            result = asyncio.run(BrowserAutomationTool().execute(action="content"))
+        assert _within_the_cap(result.output)
+        *head, blank, notice = result.output.split("\n")
+        match = HEAD_NOTICE.fullmatch(notice)
+        assert match is not None
+        assert head == [str(n) for n in range(1, int(match[1]) + 1)]
+        plain = "\n".join(str(n) for n in range(1, 100_001))
+        assert Path(match[5]).read_text(encoding="utf-8") == plain
+        assert result.data == {"length": len(plain)}

@@ -27,6 +27,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/tools/registry.py` | `ToolRegistry` — maps tool names to `BaseTool` instances; serialises for each provider |
 | `marvin/tools/builtin.py` | Built-in tools (`DateTimeTool`, `MemorySearchTool`); `MemorySearchTool` is a no-op in stateless mode |
 | `marvin/tools/coding.py` | File I/O, shell exec, web fetch/search, browser, sub-agent session tools |
+| `marvin/tools/truncate.py` | Tool output cap: `cap_head` (the backstop in `ToolResult.to_model_content()`), `OutputCapture` (bounded tail for `exec`/`process`), the per-run spill dir (`cleanup_spill_dir()`) |
 | `marvin/tools/policy.py` | `ToolPolicy` — `AgentRunner`'s `before_tool_call` hook: rejects calls outside the agent's allowed tools, logs auto-approved `require_approval` calls |
 | `marvin/tools/urls.py` | `check_url()`, `safe_urlopen()` — http(s) only; refuses loopback, link-local and metadata addresses, on each redirect too |
 | `marvin/definitions.py` | S3 path length constants and enum base classes |
@@ -69,6 +70,8 @@ Key environment variables:
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
 | `DOCKER_NETWORK` | — | `docker run --network` (compose: `wade_default`) |
 | `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS` | — | Required for the `ecs` backend |
+| `MARVIN_TOOL_OUTPUT_MAX_LINES` | `2000` | Most lines of a tool result the model sees, notice included (min `10`) |
+| `MARVIN_TOOL_OUTPUT_MAX_BYTES` | `51200` | Most UTF-8 bytes of a tool result the model sees, notice included (min `1024`) |
 
 Full launcher settings: README → Launcher settings.
 
@@ -78,6 +81,7 @@ Full launcher settings: README → Launcher settings.
 - `RateLimiterRegistry` uses `str` keys (agent names), not `int` (DB IDs).
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
 - Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
+- Do not let tool output reach the conversation uncapped: it goes through `ToolResult.to_model_content()` (or `cap_head`), and a tool that buffers a stream uses `OutputCapture` (`marvin/tools/truncate.py`).
 - Do not open a model-supplied URL with `urlopen` — use `safe_urlopen` (`marvin/tools/urls.py`).
 - Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
 - Do not change `TaskEnvelope`'s wire fields here first — weyucou/wyc6k-spec owns the contract (ADR-008); land the spec change, then conform.

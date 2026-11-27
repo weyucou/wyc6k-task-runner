@@ -8,10 +8,12 @@ import pytest
 
 from marvin.llm.base import LLMMessage, LLMResponse, MessageRole, ToolCall
 from marvin.loop import run_tool_loop
+from marvin.settings import TOOL_OUTPUT_MAX_BYTES, TOOL_OUTPUT_MAX_LINES
 from marvin.tools import ToolRegistry
-from marvin.tools.base import BaseTool, ToolResult
+from marvin.tools.base import BaseTool, ToolParameter, ToolResult
 from marvin.tools.builtin import CalculatorTool
 from marvin.tools.coding import ExecTool
+from marvin.tools.truncate import measure
 from tests.fake_llm import (
     FakeLLMClient,
     RecordingTool,
@@ -21,6 +23,7 @@ from tests.fake_llm import (
     fake_tool_call,
     fake_tool_calls,
 )
+from tests.notices import HEAD_NOTICE
 
 if TYPE_CHECKING:
     from marvin.loop import BeforeToolCall
@@ -53,6 +56,27 @@ class BadSchemaTool(BaseTool):
         return ToolResult.success("unreachable")
 
 
+LONG_OUTPUT = "".join(f"{n}\n" for n in range(1, 200_001))  # 200,000 lines, about 1.3 MB
+
+
+class LongOutputTool(BaseTool):
+    """Returns 200,000 lines; with `fail`, as the partial output of a failed call."""
+
+    name = "long_output"
+    description = "Prints a lot."
+    parameters = [ToolParameter(name="fail", type="boolean", description="Fail.", required=False, default=False)]
+
+    async def execute(self, fail: bool = False) -> ToolResult:
+        if fail:
+            return ToolResult.from_error("Printed too much.", output=LONG_OUTPUT)
+        return ToolResult.success(LONG_OUTPUT)
+
+
+def _within_the_cap(content: str) -> bool:
+    lines, size = measure(content)
+    return lines <= TOOL_OUTPUT_MAX_LINES and size <= TOOL_OUTPUT_MAX_BYTES
+
+
 @pytest.fixture
 def registry() -> ToolRegistry:
     registry = ToolRegistry()
@@ -68,7 +92,7 @@ async def _run_one_call(
     arguments: dict[str, Any],
     before_tool_call: BeforeToolCall | None = None,
 ) -> LLMMessage:
-    """Run a loop whose model calls one tool, then answers; return the tool result message."""
+    """Run a loop whose model calls one tool, then answers; return the tool result message the model received."""
     call = fake_tool_call(name, arguments)
     client = FakeLLMClient([fake_tool_calls(call), fake_text("done")])
 
@@ -78,7 +102,8 @@ async def _run_one_call(
 
     assert response.content == "done"
     assert len(client.requests) == 2
-    tool_result = history[-1]
+    tool_result = client.requests[1].messages[-1]
+    assert tool_result is history[-1]
     assert (tool_result.role, tool_result.tool_call_id, tool_result.name) == (MessageRole.TOOL, call.id, name)
     return tool_result
 
@@ -186,6 +211,40 @@ class TestRunToolLoop:
 
         assert tool_result.is_error
         assert tool_result.content == "Error executing tool: registry exploded"
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_tool_result_reaches_the_model_capped(self, registry: ToolRegistry) -> None:
+        registry.register(LongOutputTool())
+
+        tool_result = await _run_one_call(registry, "long_output", {})
+
+        assert _within_the_cap(tool_result.content)
+        assert tool_result.content.startswith("1\n2\n3\n")
+        assert HEAD_NOTICE.fullmatch(tool_result.content.rsplit("\n", 1)[1])
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_error_result_reaches_the_model_capped(self, registry: ToolRegistry) -> None:
+        registry.register(LongOutputTool())
+
+        tool_result = await _run_one_call(registry, "long_output", {"fail": True})
+
+        assert tool_result.is_error
+        assert _within_the_cap(tool_result.content)
+        *_, notice, blank, error = tool_result.content.split("\n")
+        assert HEAD_NOTICE.fullmatch(notice)
+        assert (blank, error) == ("", "Error: Printed too much.")
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_registry_failure_reaches_the_model_capped(
+        self, registry: ToolRegistry, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(registry, "execute", AsyncMock(side_effect=RuntimeError(LONG_OUTPUT)))
+
+        tool_result = await _run_one_call(registry, "calculator", {"expression": "2 + 2"})
+
+        assert tool_result.is_error
+        assert _within_the_cap(tool_result.content)
+        assert tool_result.content.startswith("Error executing tool: 1\n2\n")
 
     @pytest.mark.asyncio
     async def test_non_zero_exit_reports_the_exit_code(self, registry: ToolRegistry) -> None:

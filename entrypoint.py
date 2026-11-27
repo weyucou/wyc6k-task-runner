@@ -26,6 +26,7 @@ from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
+from marvin.tools.truncate import cleanup_spill_dir
 
 _SENSITIVE_KEYS = frozenset(
     {
@@ -90,6 +91,7 @@ async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle
         )
     finally:
         stop_background_processes()
+        cleanup_spill_dir()  # after the sessions: their reader threads write into it
     return response_text
 
 

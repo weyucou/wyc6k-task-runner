@@ -188,6 +188,16 @@ Install commands for Ubuntu: [Setup and run on Ubuntu Linux](#setup-and-run-on-u
 
 All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered via `register_builtin_tools()`.
 
+### Tool output cap
+
+Every tool result the model sees is capped at `MARVIN_TOOL_OUTPUT_MAX_LINES` lines (default 2,000) and `MARVIN_TOOL_OUTPUT_MAX_BYTES` UTF-8 bytes (default 51,200), notice included (`marvin/tools/truncate.py`). Set them in the agent-worker's environment: the ECS task definition, or `DOCKER_ENV_PASSTHROUGH` for the docker launcher. Over the cap:
+
+- `read` keeps the head and ends with `[Showing lines A-B of N. Use offset=B+1 to continue.]`. It reads line by line, and lines over 2,000 characters are cut.
+- `exec` and `process` keep the tail, in bounded memory. stdout and stderr come back as one stream.
+- Every other tool keeps the head. `web_fetch` and `browser_fetch` read at most 5 MiB of a response body.
+
+The notice states how much is shown and how much exists, for example `[Showing last 1997 of 100000 lines (11983 of 588895 bytes). Full output saved to /tmp/marvin-spill-3fed2bnc/exec-1.log]` after `exec` runs `seq 1 100000`. Spill files go to a per-run directory (`$TMPDIR/marvin-spill-*`, owner-only) that is created on first use and deleted when the run ends; `read` has no spill file, since the file is already on disk. A failed call's `Error:` message stays last: it keeps up to half of the cap, and the output is cut to the room left.
+
 ### Core Tools (`marvin/tools/builtin.py`)
 
 | Tool | Name | Description |
@@ -250,6 +260,8 @@ Not enforced:
 | `SQS_WAIT_TIME_SECONDS` | worker | Long-poll wait per receive call (default `20`) |
 | `ZAATAR_SEARCH_API_URL` | `web_search` | Base URL of a deployed [zaatar-search-api](https://github.com/monkut/zaatar-search-api) instance (e.g. `http://localhost:5000`) |
 | `ANTHROPIC_API_KEY` | `image` | Anthropic API key for vision analysis |
+| `MARVIN_TOOL_OUTPUT_MAX_LINES` | all tools | Most lines of a tool result the model sees (default `2000`, min `10`). See [Tool output cap](#tool-output-cap) |
+| `MARVIN_TOOL_OUTPUT_MAX_BYTES` | all tools | Most UTF-8 bytes of a tool result the model sees (default `51200`, min `1024`). A bad value fails at startup |
 
 ### Optional Runtime Dependencies
 

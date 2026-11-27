@@ -6,7 +6,7 @@ import json
 import logging
 import signal
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import boto3
 import pytest
@@ -131,17 +131,20 @@ class TestProcessEnvelope:
         assert mock_runner_cls.call_args.kwargs["agent"] == envelope.agent_config("sk-resolved")
         assert mock_runner_cls.return_value.chat.call_args.args[0] == envelope.task_prompt()
 
-    def test_background_processes_stopped_when_the_run_raises(self) -> None:
+    def test_processes_and_spill_dir_cleaned_up_when_the_run_raises(self) -> None:
         envelope = TaskEnvelope.model_validate(_make_envelope_dict())
+        run_end = MagicMock()
         with (
             patch("marvin.worker.ContextBundleService"),
             patch("marvin.worker.AgentRunner") as mock_runner_cls,
-            patch("marvin.worker.stop_background_processes") as mock_stop,
+            patch("marvin.worker.stop_background_processes", run_end.stop_background_processes),
+            patch("marvin.worker.cleanup_spill_dir", run_end.cleanup_spill_dir),
         ):
             mock_runner_cls.return_value.chat = AsyncMock(side_effect=RuntimeError("LLM timeout"))
             with pytest.raises(RuntimeError, match="LLM timeout"):
                 asyncio.run(worker.process_envelope(envelope, None))
-        mock_stop.assert_called_once_with()
+        # The spill dir goes last: the process sessions' reader threads write into it.
+        assert run_end.mock_calls == [call.stop_background_processes(), call.cleanup_spill_dir()]
 
 
 class TestMain:

@@ -7,6 +7,7 @@ from typing import Any
 
 from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse, ToolCall
 from marvin.tools import ToolRegistry
+from marvin.tools.truncate import cap_head
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ async def run_tool_loop(
                 if reason is None:
                     logger.info("Executing tool: %s", tool_call.name)
                     result = await registry.execute(tool_call.name, tool_call.arguments)
-                    tool_output = result.to_model_content()
+                    tool_output = result.to_model_content()  # capped to the tool output limits
                     is_error = result.is_error
                 else:
                     logger.warning("Rejected tool call %s: %s", tool_call.name, reason)
@@ -89,7 +90,7 @@ async def run_tool_loop(
                     is_error = True
             except Exception as e:
                 logger.exception("Tool execution failed: %s", tool_call.name)
-                tool_output = f"Error executing tool: {e}"
+                tool_output = cap_head(f"Error executing tool: {e}", name="error")
                 is_error = True
 
             # Add tool result to conversation

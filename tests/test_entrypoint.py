@@ -3,7 +3,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -252,18 +252,21 @@ class TestBackgroundProcessCleanup:
         [({"return_value": ("reply", [])}, 0), ({"side_effect": RuntimeError("LLM timeout")}, 1)],
         ids=["run-succeeds", "run-raises"],
     )
-    def test_background_processes_stopped_when_the_run_ends(self, monkeypatch, chat, exit_code) -> None:
+    def test_processes_and_spill_dir_cleaned_up_when_the_run_ends(self, monkeypatch, chat, exit_code) -> None:
         monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict()))
+        run_end = MagicMock()
         with (
             patch("entrypoint.CredentialResolver.resolve", return_value=None),
             patch("entrypoint.ContextBundleService") as mock_svc_cls,
             patch("entrypoint.AgentRunner") as mock_runner_cls,
-            patch("entrypoint.stop_background_processes") as mock_stop,
+            patch("entrypoint.stop_background_processes", run_end.stop_background_processes),
+            patch("entrypoint.cleanup_spill_dir", run_end.cleanup_spill_dir),
         ):
             mock_svc_cls.return_value.pull.return_value = _make_context_bundle()
             mock_runner_cls.return_value.chat = AsyncMock(**chat)
             assert entrypoint.main() == exit_code
-        mock_stop.assert_called_once_with()
+        # The spill dir goes last: the process sessions' reader threads write into it.
+        assert run_end.mock_calls == [call.stop_background_processes(), call.cleanup_spill_dir()]
 
 
 class TestScrubSensitiveFields:
