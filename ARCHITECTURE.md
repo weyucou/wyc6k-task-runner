@@ -195,6 +195,8 @@ All tools inherit from `BaseTool` (`marvin/tools/base.py`) and are registered vi
 
 A tool reports failure with `ToolResult.from_error(message, output=partial_output)`. The model receives `ToolResult.to_model_content()` — the partial output, then `Error: <message>` — flagged as an error result (Anthropic `is_error`, Gemini `error` key).
 
+`to_model_content()` also caps every result, by default at 2,000 lines / 50 KB, notice included (`marvin/tools/truncate.py`, [README → Tool output cap](README.md#tool-output-cap)). It is the backstop for every tool and keeps the head. `read` (head, with the `offset` to continue) and `exec` / `process` (tail, in bounded memory) cut their own output first, and the backstop leaves it as it is. Cut output goes to a spill file in a per-run directory, which `entrypoint.py` and `worker.py` delete after `stop_background_processes()`.
+
 ### Tool Profiles
 
 | Profile | Purpose |
