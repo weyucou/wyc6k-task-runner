@@ -2,11 +2,12 @@
 """The tool-call loop shared by every LLM provider client."""
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse, StopReason
+from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse, StopReason, ToolCall
 from marvin.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,10 @@ REISSUE_TOOL_CALL = (
     "Not run: the response hit the output token limit before this tool call was complete. "
     "Re-issue the tool call with complete arguments."
 )
+
+# Runs before each tool call. A returned string rejects the call: the tool does not run,
+# and the model receives `Error: <reason>` as the tool result.
+type BeforeToolCall = Callable[[ToolCall], Awaitable[str | None]]
 
 
 class RunOutcome(StrEnum):
@@ -72,11 +77,13 @@ async def run_tool_loop(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     max_iterations: int = 10,
+    before_tool_call: BeforeToolCall | None = None,
 ) -> LoopResult:
     """Generate a response with automatic tool execution.
 
     1. Send the conversation to the LLM.
-    2. If the LLM requests tool calls, execute them in order through `registry`.
+    2. If the LLM requests tool calls, pass each to `before_tool_call`, then execute the
+       calls it does not reject, in order, through `registry`.
     3. Append the tool results and repeat until a response has no tool calls.
 
     An error response fails the run (`llm_error`). A response cut off at `max_tokens` gets
@@ -94,6 +101,8 @@ async def run_tool_loop(
         temperature: Sampling temperature.
         max_tokens: Maximum tokens to generate.
         max_iterations: Maximum calls before the final call without tools.
+        before_tool_call: Optional hook run before each tool call. A returned string rejects the
+            call. If the hook raises, the call is not executed either.
 
     Returns:
         The run's outcome and output. The last response is not appended to the history.
@@ -149,12 +158,17 @@ async def run_tool_loop(
 
         # Execute each tool and collect results
         for tool_call in response.tool_calls:
-            logger.info("Executing tool: %s", tool_call.name)
-
             try:
-                result = await registry.execute(tool_call.name, tool_call.arguments)
-                tool_output = result.to_model_content()
-                is_error = result.is_error
+                reason = await before_tool_call(tool_call) if before_tool_call else None
+                if reason is None:
+                    logger.info("Executing tool: %s", tool_call.name)
+                    result = await registry.execute(tool_call.name, tool_call.arguments)
+                    tool_output = result.to_model_content()
+                    is_error = result.is_error
+                else:
+                    logger.warning("Rejected tool call %s: %s", tool_call.name, reason)
+                    tool_output = f"Error: {reason}"
+                    is_error = True
             except Exception as e:
                 logger.exception("Tool execution failed: %s", tool_call.name)
                 tool_output = f"Error executing tool: {e}"

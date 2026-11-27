@@ -1,12 +1,12 @@
 # Copyright (c) 2026 MNKT
 """Tests for the shared tool-call loop, driven by the scripted FakeLLMClient."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from marvin.llm.base import LLMMessage, MessageRole
+from marvin.llm.base import LLMMessage, MessageRole, ToolCall
 from marvin.loop import (
     CONTINUE_PROMPT,
     MAX_CONTINUATIONS,
@@ -21,12 +21,16 @@ from marvin.tools.builtin import CalculatorTool
 from marvin.tools.coding import ExecTool
 from tests.fake_llm import (
     FakeLLMClient,
+    RecordingTool,
     fake_error,
     fake_max_tokens,
     fake_text,
     fake_tool_call,
     fake_tool_calls,
 )
+
+if TYPE_CHECKING:
+    from marvin.loop import BeforeToolCall
 
 QUESTION = LLMMessage.user("What is 2 + 2?")
 CONTINUE = LLMMessage.user(CONTINUE_PROMPT)
@@ -57,22 +61,6 @@ class BadSchemaTool(BaseTool):
         return ToolResult.success("unreachable")
 
 
-class RecordingTool(BaseTool):
-    """Records the arguments of each call it runs."""
-
-    name = "recording"
-    description = "Records its calls."
-    parameters = []
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.calls: list[dict[str, Any]] = []
-
-    async def execute(self, **kwargs: Any) -> ToolResult:
-        self.calls.append(kwargs)
-        return ToolResult.success("recorded")
-
-
 @pytest.fixture
 def registry() -> ToolRegistry:
     registry = ToolRegistry()
@@ -82,12 +70,19 @@ def registry() -> ToolRegistry:
     return registry
 
 
-async def _run_one_call(registry: ToolRegistry, name: str, arguments: dict[str, Any]) -> LLMMessage:
+async def _run_one_call(
+    registry: ToolRegistry,
+    name: str,
+    arguments: dict[str, Any],
+    before_tool_call: BeforeToolCall | None = None,
+) -> LLMMessage:
     """Run a loop whose model calls one tool, then answers; return the tool result message."""
     call = fake_tool_call(name, arguments)
     client = FakeLLMClient([fake_tool_calls(call), fake_text("done")])
 
-    result = await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+    result = await run_tool_loop(
+        client, [QUESTION], registry.to_anthropic_tools(), registry, before_tool_call=before_tool_call
+    )
 
     assert result.text == "done"
     assert len(client.requests) == 2
@@ -328,7 +323,7 @@ class TestRunToolLoop:
 
     @pytest.mark.asyncio
     async def test_truncated_tool_calls_are_not_run(self, registry: ToolRegistry) -> None:
-        recorder = RecordingTool()
+        recorder = RecordingTool("recording")
         registry.register(recorder)
         first = fake_tool_call("recording", {"note": "complete"})
         second = fake_tool_call("recording", {"raw": '{"note": "cut o'})
@@ -406,3 +401,45 @@ class TestRunToolLoop:
 
         with pytest.raises(AssertionError, match="no scripted response left"):
             await run_tool_loop(client, [QUESTION], registry.to_anthropic_tools(), registry)
+
+
+class TestBeforeToolCall:
+    @pytest.fixture
+    def recording(self, registry: ToolRegistry) -> RecordingTool:
+        tool = RecordingTool("recording")
+        registry.register(tool)
+        return tool
+
+    @pytest.mark.asyncio
+    async def test_rejected_call_is_not_executed(self, registry: ToolRegistry, recording: RecordingTool) -> None:
+        seen: list[ToolCall] = []
+
+        async def reject(call: ToolCall) -> str | None:
+            seen.append(call)
+            return f"{call.name} is paused"
+
+        tool_result = await _run_one_call(registry, "recording", {"path": "a"}, before_tool_call=reject)
+
+        assert recording.calls == []
+        assert [(call.name, call.arguments) for call in seen] == [("recording", {"path": "a"})]
+        assert tool_result.content == "Error: recording is paused"
+
+    @pytest.mark.asyncio
+    async def test_call_runs_when_the_hook_returns_none(self, registry: ToolRegistry, recording: RecordingTool) -> None:
+        async def allow(_call: ToolCall) -> str | None:
+            return None
+
+        tool_result = await _run_one_call(registry, "recording", {"path": "a"}, before_tool_call=allow)
+
+        assert recording.calls == [{"path": "a"}]
+        assert tool_result.content == "recording ran"
+
+    @pytest.mark.asyncio
+    async def test_raising_hook_skips_the_tool(self, registry: ToolRegistry, recording: RecordingTool) -> None:
+        async def broken(_call: ToolCall) -> str | None:
+            raise RuntimeError("policy exploded")
+
+        tool_result = await _run_one_call(registry, "recording", {}, before_tool_call=broken)
+
+        assert recording.calls == []
+        assert tool_result.content == "Error executing tool: policy exploded"

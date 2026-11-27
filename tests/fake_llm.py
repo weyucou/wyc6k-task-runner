@@ -3,7 +3,7 @@
 
 `FakeLLMClient` returns queued `LLMResponse`s in order and records each request it
 receives. Build the responses with `fake_text`, `fake_tool_calls`, `fake_error` and
-`fake_max_tokens`.
+`fake_max_tokens`. `RecordingTool` records each call it receives.
 """
 
 import itertools
@@ -11,8 +11,26 @@ from dataclasses import dataclass
 from typing import Any
 
 from marvin.llm.base import BaseLLMClient, LLMMessage, LLMResponse, StopReason, ToolCall
+from marvin.tools.base import BaseTool, ToolResult
 
 _call_ids = itertools.count(1)
+
+
+class RecordingTool(BaseTool):
+    """A tool named `name` that records the arguments of each call in `calls`."""
+
+    description = "Records each call."
+    parameters = []
+
+    def __init__(self, name: str, *, require_approval: bool = False) -> None:
+        super().__init__()
+        self.name = name
+        self.require_approval = require_approval
+        self.calls: list[dict[str, Any]] = []
+
+    async def execute(self, **kwargs: Any) -> ToolResult:
+        self.calls.append(kwargs)
+        return ToolResult.success(f"{self.name} ran")
 
 
 @dataclass
