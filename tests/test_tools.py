@@ -254,11 +254,11 @@ class TestBrowserTool:
     def test_fetches_off_the_event_loop_thread(self) -> None:
         calls: list[tuple[str, int, threading.Thread]] = []
 
-        def fake_urlopen(url: str, timeout: int) -> io.BytesIO:
+        def fake_safe_urlopen(url: str, timeout: int) -> io.BytesIO:
             calls.append((url, timeout, threading.current_thread()))
             return io.BytesIO(b"<p>hello</p>")
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("marvin.tools.builtin.safe_urlopen", side_effect=fake_safe_urlopen):
             result = asyncio.run(BrowserTool().execute(url="http://example.com"))
         assert result.error is None
         assert result.output == "<p>hello</p>"
@@ -278,7 +278,7 @@ class TestBrowserTool:
         ids=["url-error", "timeout", "bad-url", "http-protocol"],
     )
     def test_fetch_errors_return_an_error_result(self, exc) -> None:
-        with patch("urllib.request.urlopen", side_effect=exc):
+        with patch("marvin.tools.builtin.safe_urlopen", side_effect=exc):
             result = asyncio.run(BrowserTool().execute(url="http://example.com"))
         assert result.error is not None
         assert result.error.startswith("Failed to fetch URL:")
@@ -1060,8 +1060,8 @@ def _response(body: bytes) -> MagicMock:
 
 
 FETCH_TOOLS = [
-    pytest.param(WebFetchTool, "marvin.tools.coding.urlopen", id="web_fetch"),
-    pytest.param(BrowserTool, "urllib.request.urlopen", id="browser_fetch"),
+    pytest.param(WebFetchTool, "marvin.tools.coding.safe_urlopen", id="web_fetch"),
+    pytest.param(BrowserTool, "marvin.tools.builtin.safe_urlopen", id="browser_fetch"),
 ]
 
 
