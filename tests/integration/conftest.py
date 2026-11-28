@@ -3,8 +3,9 @@
 
 Every AWS service is backed by **moto** (`mock_aws`) — in-process, no Docker
 daemon, no network (Testing Policy → AWS Service Mocking). GitHub operations run
-through a recording `gh` stub placed on `PATH`, so no live repository, token or
-network access is needed either.
+through a recording `gh` stub placed on `PATH`, and the clone step reads a local
+bare repository (`fake_remote`, tests/conftest.py), so no live repository, token
+or network access is needed either.
 """
 
 import json
@@ -22,6 +23,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
+
+    from tests.conftest import FakeRemote
 
 from marvin.awsclients import get_secrets_manager_client
 from marvin.functions import get_s3_client
@@ -59,7 +62,8 @@ PROJECT_GOALS = "# wyc6k-sandbox\n\nSandbox project used by the pipeline integra
 
 # `gh` stand-in: records every invocation — arguments plus the token it was
 # handed — as one JSON object per line, and answers the read-back commands the
-# agent tools rely on.
+# runtime relies on: `api user` (the clone's git identity), `pr create` and
+# `issue view` (the agent tools).
 _GH_STUB_SOURCE = '''#!{python}
 """Recording stand-in for the `gh` CLI."""
 
@@ -77,6 +81,8 @@ if argv[:2] == ["pr", "create"]:
     sys.stdout.write({pr_url!r} + "\\n")
 elif argv[:2] == ["issue", "view"]:
     sys.stdout.write("title:\\tSandbox task\\n")
+elif argv[:2] == ["api", "user"]:
+    sys.stdout.write(json.dumps(dict(login="sandbox-bot", id=1234)) + "\\n")
 '''
 
 
@@ -298,6 +304,13 @@ def gh_cli(tmp_path, monkeypatch) -> Iterator[GhRecorder]:
 
 
 @pytest.fixture
+def sandbox_remote(fake_remote) -> FakeRemote:
+    """Serve the sandbox repository for the runtime's clone step."""
+    fake_remote.add(SANDBOX_REPOSITORY)
+    return fake_remote
+
+
+@pytest.fixture
 def llm(monkeypatch) -> Iterator[ScriptedLLMServer]:
     """Serve scripted model replies over an OpenAI-compatible endpoint.
 
@@ -324,6 +337,7 @@ class Pipeline:
         fargate: FargateEnvironment,
         gh: GhRecorder,
         llm: ScriptedLLMServer,
+        remote: FakeRemote,
         s3_context_prefix: str,
         github_token_secret_id: str,
         dlq_alarm_name: str,
@@ -335,6 +349,7 @@ class Pipeline:
         self.fargate = fargate
         self.gh = gh
         self.llm = llm
+        self.remote = remote
         self.s3_context_prefix = s3_context_prefix
         self.github_token_secret_id = github_token_secret_id
         self.dlq_alarm_name = dlq_alarm_name
@@ -352,8 +367,9 @@ def pipeline(
     dlq_depth_alarm,
     gh_cli,
     llm,
+    sandbox_remote,
 ) -> Pipeline:
-    """Provision queues, cluster, S3 context, credentials and the two stubs."""
+    """Provision queues, cluster, S3 context, credentials, the two stubs and the sandbox repository."""
     return Pipeline(
         sqs=sqs_client,
         ecs=ecs_client,
@@ -362,6 +378,7 @@ def pipeline(
         fargate=fargate,
         gh=gh_cli,
         llm=llm,
+        remote=sandbox_remote,
         s3_context_prefix=s3_context,
         github_token_secret_id=github_token_secret,
         dlq_alarm_name=dlq_depth_alarm,

@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,10 @@ import pytest
 import entrypoint
 from marvin.context import CustomerContextBundle, MemoryEntry
 from marvin.models import TaskEnvelope
+from marvin.workspace import Workspace, WorkspaceError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 PRE_CONTRACT_ENVELOPE_JSON = (Path(__file__).parent / "fixtures" / "envelopes" / "pre_contract_sender.json").read_text(
     encoding="utf-8"
@@ -73,6 +78,18 @@ def _make_context_bundle() -> CustomerContextBundle:
     )
 
 
+@pytest.fixture(autouse=True)
+def workspace_clone(tmp_path, monkeypatch) -> Iterator[MagicMock]:
+    """Stand in for the clone step, so the agent runs in tmp_path (tests/test_workspace.py covers the clone).
+
+    The cwd that main() moves into the clone is restored at teardown.
+    """
+    monkeypatch.chdir(Path.cwd())
+    workspace = Workspace(path=tmp_path, repository="acme-corp/billing-api", login="sandbox-bot")
+    with patch("entrypoint.clone", return_value=workspace) as mock_clone:
+        yield mock_clone
+
+
 class TestMainExitCodes:
     def test_missing_env_var_returns_2(self, monkeypatch) -> None:
         monkeypatch.delenv("TASK_ENVELOPE_JSON", raising=False)
@@ -126,6 +143,31 @@ class TestMainExitCodes:
         ):
             mock_svc_cls.return_value.pull.side_effect = Exception("S3 unreachable")
             assert entrypoint.main() == 2
+
+    @pytest.mark.parametrize("repository", ["acme-corp/..", "acme-corp/."])
+    def test_dot_repository_name_returns_2_naming_the_field(
+        self, monkeypatch, capsys, workspace_clone, repository
+    ) -> None:
+        monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict(repository=repository)))
+        assert entrypoint.main() == 2
+        [failure] = [line for line in _log_lines(capsys) if line["event"] == "Failed to parse task envelope"]
+        assert {tuple(error["loc"]) for error in failure["errors"]} == {("repository",)}
+        workspace_clone.assert_not_called()
+
+    def test_clone_failure_returns_2(self, monkeypatch, capsys, workspace_clone) -> None:
+        monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict()))
+        workspace_clone.side_effect = WorkspaceError("git clone failed: repository not found")
+        with (
+            patch("entrypoint.CredentialResolver.resolve", return_value=None),
+            patch("entrypoint.ContextBundleService") as mock_svc_cls,
+            patch("entrypoint.AgentRunner") as mock_runner_cls,
+        ):
+            mock_svc_cls.return_value.pull.return_value = _make_context_bundle()
+            assert entrypoint.main() == 2
+        mock_runner_cls.assert_not_called()
+        [failure] = [line for line in _log_lines(capsys) if line["event"] == "Failed to clone repository"]
+        assert failure["step"] == "clone"
+        assert failure["error"] == "git clone failed: repository not found"
 
     def test_agent_run_failure_returns_1(self, monkeypatch) -> None:
         monkeypatch.setenv("TASK_ENVELOPE_JSON", json.dumps(_make_envelope_dict()))

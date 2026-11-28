@@ -2,13 +2,13 @@
 """One-shot Fargate/Batch entrypoint for the marvin agent worker.
 
 ECS Fargate launches one container per task with TASK_ENVELOPE_JSON set.
-Resolves credentials, pulls S3 context, runs the agent, writes a memory
-summary, then exits.
+Resolves credentials, pulls S3 context, clones the repository, runs the agent
+in the clone, writes a memory summary, then exits.
 
 Exit codes:
     0 — task completed successfully
     1 — task failure (agent error during run)
-    2 — setup/config failure (parse, credential, or context pull error)
+    2 — setup/config failure (parse, credential, context pull, or clone error)
 """
 
 import asyncio
@@ -26,6 +26,7 @@ from marvin.llm import LLMMessage
 from marvin.models import TaskEnvelope
 from marvin.runner import AgentRunner
 from marvin.tools.coding import stop_background_processes
+from marvin.workspace import Workspace, WorkspaceError, clone
 
 _SENSITIVE_KEYS = frozenset(
     {
@@ -93,6 +94,18 @@ async def _run_agent(envelope: TaskEnvelope, api_key: str | None, context_bundle
     return response_text
 
 
+def _clone_step(envelope: TaskEnvelope, log: Any) -> Workspace | None:
+    """Clone the envelope's repository for the agent to run in. Returns None, once logged, when it fails."""
+    log.info("Cloning repository", step="clone", status="start")
+    try:
+        workspace = clone(envelope, os.environ.get("GITHUB_TOKEN", ""))
+    except WorkspaceError as exc:
+        log.error("Failed to clone repository", step="clone", status="failed", error=str(exc))
+        return None
+    log.info("Repository cloned", step="clone", status="ok", workspace=str(workspace.path))
+    return workspace
+
+
 def main() -> int:
     configure_logging()
     log: Any = structlog.get_logger(__name__)
@@ -146,7 +159,13 @@ def main() -> int:
         return 2
     log.info("S3 context pulled", step="pull-context", status="ok")
 
-    # Step 4: Run agent
+    # Step 4: Clone the repository; the agent and its tools run in the clone
+    workspace = _clone_step(envelope, log)
+    if workspace is None:
+        return 2
+    os.chdir(workspace.path)
+
+    # Step 5: Run agent
     log.info("Running agent", step="run-agent", status="start")
     try:
         response_text = asyncio.run(_run_agent(envelope, api_key, context_bundle))
@@ -155,7 +174,7 @@ def main() -> int:
         return 1
     log.info("Agent run complete", step="run-agent", status="ok", response_length=len(response_text))
 
-    # Step 5: Write memory summary
+    # Step 6: Write memory summary
     log.info("Writing memory entry", step="write-memory", status="start")
     try:
         today = dt.datetime.now(tz=dt.UTC).date()

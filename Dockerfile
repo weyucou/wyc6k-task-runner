@@ -49,6 +49,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 
+# Root of the per-run clones (WORKSPACE_ROOT, marvin/workspace.py)
+RUN mkdir -p /workspace
+
 WORKDIR /app
 
 # Copy the prebuilt venv (fargate runtime deps + askcc) from builder
