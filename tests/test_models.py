@@ -186,6 +186,8 @@ class TestTaskEnvelopeValidation:
             pytest.param(_without("schema_version"), ("schema_version",), id="missing-schema-version"),
             pytest.param(_without("repository"), ("repository",), id="missing-repository"),
             pytest.param(_envelope_dict(repository="billing-api"), ("repository",), id="repository-not-owner-name"),
+            pytest.param(_envelope_dict(repository="acme-corp/.."), ("repository",), id="repository-name-dot-dot"),
+            pytest.param(_envelope_dict(repository="acme-corp/."), ("repository",), id="repository-name-dot"),
             pytest.param(
                 _envelope_dict(issue_url="https://github.com/acme-corp/payments-api/issues/42"),
                 ("issue_url",),
@@ -237,6 +239,11 @@ class TestTaskEnvelopeValidation:
     )
     def test_issue_url_in_repository_accepted(self, issue_url) -> None:
         assert TaskEnvelope.model_validate(_envelope_dict(issue_url=issue_url)).issue_url == issue_url
+
+    @pytest.mark.parametrize("repository", ["acme-corp/.github", "acme-corp/a.b"])
+    def test_repository_name_with_dots_accepted(self, repository) -> None:
+        envelope_dict = _envelope_dict(repository=repository, issue_url=f"https://github.com/{repository}/issues/42")
+        assert TaskEnvelope.model_validate(envelope_dict).repository == repository
 
     def test_agent_api_key_rejected(self) -> None:
         with pytest.raises(ValidationError) as exc_info:

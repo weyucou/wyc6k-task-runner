@@ -178,6 +178,8 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 "entrypoint.py" = ["BLE001", "TRY400"]
 # S603: `docker run` gets a list argv, no shell, built from the operator's own env config.
 "marvin/launchers/docker.py" = ["S603"]
+# S603: git/gh get a list argv, no shell; its one envelope value, `repository`, is validated at parse.
+"marvin/workspace.py" = ["S603"]
 "marvin/tools/coding.py" = [
     # ASYNC109: `timeout` is a parameter of the LLM-facing tool schema; the registry passes it by name.
     "ASYNC109",
@@ -193,7 +195,8 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 ]
 # S105/S106: test fixtures pass Secrets Manager secret IDs and stub tokens, not secrets.
 # PLR0917: pytest injects fixtures by name, so a test's positional-argument count is not an API.
-"tests/**" = ["ANN001", "PLR0917", "PLR2004", "S105", "S106"]
+# S603/S607: the fake remote and the clone tests run `git` from PATH on repositories under tmp_path.
+"tests/**" = ["ANN001", "PLR0917", "PLR2004", "S105", "S106", "S603", "S607"]
 
 [tool.ruff.lint.mccabe]
 # Flag errors (`C901`) whenever the complexity level exceeds this value.

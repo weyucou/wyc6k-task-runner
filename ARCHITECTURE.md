@@ -27,12 +27,22 @@ entrypoint.py
     1. Parse   — TaskEnvelope.model_validate_json(TASK_ENVELOPE_JSON) (v1 contract)
     2. Resolve — CredentialResolver.resolve(envelope) → GITHUB_TOKEN env var; returns the LLM api_key
     3. Pull    — ContextBundleService.pull(context_s3_prefix) → CustomerContextBundle
-    4. Run     — AgentRunner(agent=envelope.agent_config(api_key)).chat(envelope.task_prompt(), ...)
-    5. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3
-    6. Exit    — 0 (success) | 1 (task failure) | 2 (setup/config failure)
+    4. Clone   — workspace.clone(envelope, GITHUB_TOKEN) → <WORKSPACE_ROOT>/<mkdtemp>/<name>, then os.chdir into it
+    5. Run     — AgentRunner(agent=envelope.agent_config(api_key)).chat(envelope.task_prompt(), ...) in the clone
+    6. Memory  — ContextBundleService.push_memory(...) → daily memory file on S3
+    7. Exit    — 0 (success) | 1 (task failure) | 2 (setup/config failure, the clone included)
 ```
 
 The one-shot path never polls SQS. `TASK_ENVELOPE_JSON` is injected by the ECS task definition override at launch time (see `wyc6k-infra`).
+
+**Clone** (`marvin/workspace.py`, `step=clone`):
+
+- `gh api user` gives the git identity: `user.name=<login>`, `user.email=<id>+<login>@users.noreply.github.com`. It runs first, so a bad token fails before anything is written.
+- The run dir is `tempfile.mkdtemp(dir=WORKSPACE_ROOT)` (default `/workspace`); `task_id` is never part of the path. The clone goes in `<run dir>/<name>`, which must resolve inside the root. A `repository` name of `.` or `..` is already rejected at parse.
+- `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' clone --filter=blob:none https://github.com/<repository>.git <dir>`, then the same helper and the identity are written with `git config --local`, so the agent's `git push` and `gh` need no setup. Nothing is written to the global gitconfig.
+- The token reaches git and gh only as `GH_TOKEN` in the child environment: never in the URL, argv, `.git/config`, the logs or the prompt. `WorkspaceError` messages have it replaced by `[REDACTED]`.
+- No GitHub token (neither `github_token_secret_id` nor `GITHUB_TOKEN`) exits `2`; there is no anonymous clone.
+- The coding tools resolve paths against the process cwd, so the `os.chdir` moves all of them into the clone.
 
 ### Launcher flow (`marvin/launchers/`)
 
@@ -133,7 +143,7 @@ Only two boundaries are stubbed, both outside AWS:
 | Boundary | Stand-in |
 |----------|----------|
 | LLM | A scripted OpenAI-compatible endpoint on localhost. The agent reaches it through the real `OpenAIClient` (`LLMProvider.VLLM`), so tool serialisation, the tool-call loop and tool execution are production code. |
-| GitHub | A recording `gh` executable placed at the front of `PATH`, capturing each invocation's arguments and the token it ran with. |
+| GitHub | A recording `gh` executable placed at the front of `PATH`, capturing each invocation's arguments and the token it ran with. The clone step reads a local bare repository: `fake_remote` (`tests/conftest.py`) maps `https://github.com/` to it with a `url.<file>.insteadOf` rule in `GIT_CONFIG_*` env vars. |
 
 **Routing is not runtime code.** Choosing Lambda / Fargate / Batch belongs to
 `wyc6k-task-manager` (see the Repository Responsibility Boundary in
@@ -151,6 +161,7 @@ contract; it must never move into `marvin/`.
 | `marvin/runner.py` | `AgentRunner` — builds the prompt and tool list, applies rate limiting, runs the tool-call loop |
 | `marvin/loop.py` | `run_tool_loop()` — the tool-call loop, shared by every provider client |
 | `marvin/context.py` | `ContextBundleService` — reads customer context from S3 |
+| `marvin/workspace.py` | `clone()` — the per-run clone of the envelope's repository, with credentials and git identity |
 | `marvin/llm/` | LLM clients (Anthropic, Gemini, OpenAI, Ollama) |
 | `marvin/tools/` | Tool base classes, registry, built-in tools, coding tools, `ToolPolicy` (`policy.py`), URL checks (`urls.py`) |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter (keyed by agent name) |
@@ -162,7 +173,7 @@ contract; it must never move into `marvin/`.
 - **Task**: `repository` (`owner/name`), `issue_url` (an issue or PR in `repository`) and `action` (`develop` | `review`). `task_prompt()` builds the agent's task from them, then appends the optional `user_message`.
 - **`agent` block** (`AgentSpec`): `provider`, `model_name` and `tool_profile` (lowercase) are required; `max_tokens`, `tools_allow` and `tools_deny` are optional. `agent_config(api_key)` builds the runner's `AgentConfig` from it. `provider: bedrock` parses, but has no client until [#80](https://github.com/weyucou/wyc6k-task-runner/issues/80).
 - **No secrets on the wire**: `agent.api_key` is rejected. `CredentialResolver.resolve()` returns the key from `anthropic_api_key_secret_id` or `ANTHROPIC_API_KEY`. Endpoints such as `base_url` come from the runner environment (`OPENAI_BASE_URL` for `vllm`).
-- **Parse errors** name the field in the pydantic `loc`: an unknown `schema_version`, a missing `repository`, an `issue_url` outside `repository`. `entrypoint.py` exits `2`. Unknown fields are ignored.
+- **Parse errors** name the field in the pydantic `loc`: an unknown `schema_version`, a missing `repository`, a `repository` name of `.` or `..`, an `issue_url` outside `repository`. `entrypoint.py` exits `2`. Unknown fields are ignored.
 - **Runner-internal**: `session_id` (defaults to `task_id`), `conversation_history` and `enable_tools`.
 
 ## TaskEnvelope flow

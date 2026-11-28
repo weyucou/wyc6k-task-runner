@@ -21,6 +21,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/runner.py` | `AgentRunner` — builds the LLM client, registers tools, sends only the agent's allowed tools, runs the tool-call loop (`run_tool_loop`) with `ToolPolicy` |
 | `marvin/loop.py` | `run_tool_loop()` — the one tool-call loop; calls the provider client's single-call `generate()` each turn; a `before_tool_call` hook can reject a call |
 | `marvin/context.py` | `ContextBundleService` — `pull()` reads customer context from S3; `push_memory()` writes daily memory entries |
+| `marvin/workspace.py` | `clone()` — clones the envelope's `repository` into a new run dir under `WORKSPACE_ROOT`, with the `gh auth git-credential` helper and the token user's git identity in `.git/config`; `entrypoint.py` runs the agent in the clone. Every git/gh call goes through `_run()` |
 | `marvin/llm/factory.py` | `create_llm_client()`, `create_client_from_agent_config()` |
 | `marvin/llm/` | LLM client implementations: Anthropic, Gemini, Ollama, OpenAI/vLLM |
 | `marvin/rate_limiter.py` | Thread-safe sliding-window rate limiter, keyed by agent name (`str`) |
@@ -33,6 +34,7 @@ wyc6k-task-runner is the agent execution layer of the WYC6k multi-tenant agent h
 | `marvin/functions.py` | `get_s3_client()` (respects `S3_ENDPOINT_URL`), `uuidv7()` |
 | `tests/` | pytest tests (no Django test runner) |
 | `tests/fake_llm.py` | `FakeLLMClient` — scripted LLM for loop tests (`fake_text`, `fake_tool_calls`, `fake_error`, `fake_max_tokens`); records each request. `RecordingTool` records each tool call |
+| `tests/conftest.py` | `fake_remote` — serves `https://github.com/<owner>/<name>.git` from local bare repos (`FakeRemote.add()`) through `GIT_CONFIG_*` `insteadOf`, with git kept off the developer's gitconfig and `WORKSPACE_ROOT` under `tmp_path` |
 | `tests/fixtures/envelopes/` | The spec's example v1 envelopes (verbatim) and the sender's pre-contract shape, which must fail |
 | `tests/integration/` | End-to-end pipeline tests (SQS → agent → GitHub → S3 memory) on moto; `control_plane.py` holds the routing stand-in that belongs to `wyc6k-task-manager` |
 | `pyproject.toml` | Project config; pure Python, no Django deps |
@@ -69,6 +71,7 @@ Key environment variables:
 | `AGENT_WORKER_IMAGE` | `weyucou/agent-worker:latest` | Image the docker backend runs |
 | `DOCKER_NETWORK` | — | `docker run --network` (compose: `wade_default`) |
 | `ECS_CLUSTER`, `ECS_TASK_DEFINITION`, `ECS_SUBNETS`, `ECS_SECURITY_GROUPS` | — | Required for the `ecs` backend |
+| `WORKSPACE_ROOT` | `/workspace` | Root of the per-run clones (`marvin/workspace.py`) |
 
 Full launcher settings: README → Launcher settings.
 
@@ -79,5 +82,6 @@ Full launcher settings: README → Launcher settings.
 - Do not store state between task executions — the worker is stateless by design; each task gets a fresh context bundle from S3.
 - Do not add a tool-call loop to a provider client — `marvin/loop.py` owns it; clients implement single-call `generate()` only.
 - Do not open a model-supplied URL with `urlopen` — use `safe_urlopen` (`marvin/tools/urls.py`).
+- Do not put the GitHub token in a URL, argv or git config — the harness's git/gh calls go through `workspace._run()`, which passes it as `GH_TOKEN` for the `gh auth git-credential` helper.
 - Do not change the `entrypoint.py` contract (`TASK_ENVELOPE_JSON` in, exit `0`/`1`/`2` out) without updating `marvin/launchers/` — the launcher deletes SQS messages on exit `0` only.
 - Do not change `TaskEnvelope`'s wire fields here first — weyucou/wyc6k-spec owns the contract (ADR-008); land the spec change, then conform.

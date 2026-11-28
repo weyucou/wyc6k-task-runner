@@ -84,7 +84,7 @@ docker compose --profile local-runner build  # weyucou/agent-worker:local and th
 
 ```bash
 export ANTHROPIC_API_KEY=your-key-here  # forwarded to the agent container by name, never in argv
-export GITHUB_TOKEN=your-token  # only needed for GitHub tools
+export GITHUB_TOKEN=your-token  # required: the agent container clones the envelope's repository with it
 docker compose --profile local-runner up -d  # plain `docker compose up -d` starts only LocalStack
 until curl -fs http://localhost:4566/_localstack/health > /dev/null; do sleep 1; done  # wait for LocalStack
 ```
@@ -100,15 +100,17 @@ aws --endpoint-url http://localhost:4566 sqs create-queue --queue-name tasks
 aws --endpoint-url http://localhost:4566 s3 mb s3://local-context
 echo "# Local customer" | aws --endpoint-url http://localhost:4566 s3 cp - s3://local-context/customers/cust-001/CLAUDE.md
 
-# Enqueue a test envelope (v1 contract; the repository and issue only appear in the prompt here)
-cat > envelope.json <<'EOF'
+# Enqueue a test envelope (v1 contract). The agent runs in a clone of `repository`, so name one
+# GITHUB_TOKEN can read; the issue only appears in the prompt here
+export REPOSITORY=your-org/your-repo
+cat > envelope.json <<EOF
 {
   "schema_version": 1,
   "task_id": "local-001",
   "customer_id": "cust-001",
   "task_source_id": 1,
-  "repository": "example-org/demo",
-  "issue_url": "https://github.com/example-org/demo/issues/1",
+  "repository": "$REPOSITORY",
+  "issue_url": "https://github.com/$REPOSITORY/issues/1",
   "action": "review",
   "agent": {"provider": "anthropic", "model_name": "claude-sonnet-5-5", "tool_profile": "minimal"},
   "context_s3_prefix": "s3://local-context/customers/cust-001/projects/demo/",
@@ -272,8 +274,9 @@ delivery, compute routing, the agent's tool calls against a GitHub issue, and
 the daily memory file written back to S3. AWS is served in-process by
 [moto](https://docs.getmoto.org/) (`@mock_aws()`), so no Docker daemon,
 LocalStack container or network access is required. The two external
-boundaries are stubbed: the model behind an OpenAI-compatible endpoint the real
-client talks to, and the `gh` CLI behind a recording stand-in on `PATH`.
+boundaries are stubbed: the model, behind an OpenAI-compatible endpoint the real
+client talks to, and GitHub, behind a recording `gh` stand-in on `PATH` plus a
+local bare repository for the runtime's clone.
 
 ### Run Linter
 
