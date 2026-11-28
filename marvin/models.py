@@ -1,9 +1,9 @@
 # Copyright (c) 2026 MNKT
 import re
 from enum import StrEnum
-from typing import Any, Literal, Self
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 
 class LLMProvider(StrEnum):
@@ -32,6 +32,13 @@ _ACTION_TASKS = {
 }
 _REPOSITORY_PATTERN = r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$"  # owner/name
 _GITHUB_ISSUE_URL = re.compile(r"https://github\.com/(?P<repository>[^/]+/[^/]+)/(?:issues|pull)/\d+")
+
+
+def _reject_dot_segments(repository: str) -> str:
+    """Reject a name of `.` or `..`: the name is a path segment of the clone directory (marvin/workspace.py)."""
+    if repository.split("/", 1)[1] in {".", ".."}:  # the pattern ran first, so there is exactly one "/"
+        raise ValueError("repository name must not be '.' or '..'")
+    return repository
 
 
 class AgentConfig(BaseModel):
@@ -138,7 +145,7 @@ class TaskEnvelope(BaseModel):
     task_id: str
     customer_id: str
     task_source_id: int
-    repository: str = Field(pattern=_REPOSITORY_PATTERN)
+    repository: Annotated[str, Field(pattern=_REPOSITORY_PATTERN), AfterValidator(_reject_dot_segments)]
     issue_url: str
     action: TaskAction
     agent: AgentSpec
